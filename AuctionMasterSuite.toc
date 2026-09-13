@@ -1,0 +1,33 @@
+## Interface: 30300
+## Title: Auction Master Suite
+## Notes: Commodity market control: cost-to-clear, buy plan, batch posting, velocity + P&L
+## Author: rodneywowwow
+## Version: 0.20.0
+## SavedVariables: AuctionMasterSuiteDB
+## SavedVariablesPerCharacter: AuctionMasterSuiteCharDB
+
+Core.lua
+Util.lua
+Skin.lua
+Config.lua
+Data\RecipeData.lua
+Core\Database.lua
+Core\Scanner.lua
+Core\Inventory.lua
+Core\Analysis.lua
+Core\Buyer.lua
+Core\Poster.lua
+Core\Canceller.lua
+Core\Craft.lua
+Core\Ledger.lua
+UI.lua
+MinimapButton.lua
+Modules\Market.lua
+Modules\Post.lua
+Modules\Auctions.lua
+Modules\Books.lua
+Modules\Insights.lua
+Modules\CraftTab.lua
+Modules\History.lua
+Modules\Watchlist.lua
+Modules\Donate.lua

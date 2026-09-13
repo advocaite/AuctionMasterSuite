@@ -1,0 +1,20 @@
+# Editor / IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# OS junk
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# WoW runtime output - never belongs in the repo
+*.bak
+*.old
+WTF/
+SavedVariables/
+
+# Local scratch
+scratch/
+notes/
+*.tmp
