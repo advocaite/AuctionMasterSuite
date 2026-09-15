@@ -7,7 +7,7 @@ It tells you what it costs to clear every listing under your price, buys them in
 your stock, and keeps an honest ledger of what you actually made — per item, per character, over
 time. Dark/gold themed, self-contained, no dependencies.
 
-> **Status:** v0.24.0 — actively developed. Bug reports and feature requests very welcome.
+> **Status:** v0.28.0 — actively developed. Bug reports and feature requests very welcome.
 >
 > **Repo:** https://github.com/advocaite/AuctionMasterSuite — open an
 > [Issue](https://github.com/advocaite/AuctionMasterSuite/issues) for anything broken or missing.
@@ -150,8 +150,9 @@ database was extracted from your own game client's `Spell.dbc` and ships as a da
 - **3,443** craftable items
 - **3,667** recipes (several spells often make the same item — it costs each one and picks the
   cheapest at today's prices)
-- **265** enchants, costed as the `Scroll of ...` you would sell: the spell's reagents plus the
-  Enchanting Vellum it goes on
+- **267** enchants, costed from their reagents and matched to the `Scroll of ...` you would sell.
+  The vellum is not counted: there are six of them and which one an enchant needs is not in the
+  spell data, so the tab says a vellum is extra rather than guessing at one
 
 On top of that it learns things the client does not record: prospecting, milling and disenchanting
 yields are worked out by watching your bags before and after, so the more you do the better its
@@ -164,6 +165,17 @@ gets throttled.
 
 Every table that lists items shows its icon, and hovering one gives you the real item tooltip —
 which is also the request, so it resolves that item immediately rather than waiting its turn.
+
+## Prices are shared
+
+Every scan records a price for **everything it saw**, not just the item you asked for. A scan reads
+whole pages, and a page is full of other people's items at real, current prices — so a reagent no
+longer sits at "not priced" because you only ever met it sideways. One search picks up a few hundred
+items in passing.
+
+Those prices are saved per realm and read by every tab, so what the Craft tab costs a recipe at is
+the same number the Market tab is looking at. Items you actually watch keep their full scan history;
+ones seen in passing keep a shorter one, so the saved-variables file stays a sensible size.
 
 ---
 

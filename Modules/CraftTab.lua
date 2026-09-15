@@ -16,7 +16,10 @@ function M:OnInit()
     C = Skin.COLOR
     AMS:Subscribe("CRAFT_CHANGED",   function() M:Refresh() end)
     -- changing the market elsewhere drops the local pick, so the tab follows
-    AMS:Subscribe("CURRENT_CHANGED", function() M.selected = nil; M:Refresh() end)
+    AMS:Subscribe("CURRENT_CHANGED", function()
+        M.selected, M.selectedEnchant = nil, nil
+        M:Refresh()
+    end)
     AMS:Subscribe("HISTORY_CHANGED", function() M:Refresh() end)
     AMS:Subscribe("AH_STATE",        function() M:Refresh() end)
     -- Names arriving from the server: redraw so "item #37663" becomes the item.
@@ -29,7 +32,30 @@ function M:OnInit()
     end)
 end
 
+-- What you would have to ask to clear your required margin over materials.
+--
+--   you receive   price * (1 - cut)
+--   you want      price * (1 - cut) - cost = margin * cost
+--   so            price = cost * (1 + margin) / (1 - cut)
+--
+-- Useful wherever there is a cost but no market price to compare it against -
+-- which is every enchant nobody has put a scroll up for.
+function M:AskingPrice(cost, margin)
+    if not cost or cost <= 0 then return nil end
+    local cut = AMS.Config:Cut()
+    if cut >= 1 then return nil end
+    margin = margin or AMS.Config:MinMargin()
+    return math.floor(cost * (1 + margin) / (1 - cut))
+end
+
 -- The deliberate way out of the tab: take this item to the Market.
+function M:InspectEnchant(enchName)
+    self.selectedEnchant = enchName
+    self.selected = nil
+    self.view = "made"
+    self:Refresh()
+end
+
 function M:OpenInMarket(id)
     if not id then return end
     local info = U:ItemInfo(id)
@@ -43,10 +69,22 @@ function M:OpenInMarket(id)
     AMS.UI:Show("market")
 end
 
+-- Whatever is under inspection, as a list of items to watch or price. An
+-- enchant is described by its reagents rather than by an item id, so it needs
+-- asking separately - and it is the case that has no id at all when no scroll
+-- has ever been seen.
+function M:CurrentItems()
+    if self.selectedEnchant then
+        return AMS.Craft:ItemsForEnchant(self.selectedEnchant)
+    end
+    local id = self:CurrentInput()
+    return id and AMS.Craft:ItemsFor(id) or {}
+end
+
 -- Put every item in the conversion on the watchlist. No auction house needed:
 -- this is the "set it up now, price it next time I am there" path.
-function M:WatchAll(id)
-    local todo = AMS.Craft:ItemsFor(id)
+function M:WatchAll(todo)
+    if not todo or #todo == 0 then return end
     local added, already, uncached = 0, 0, 0
     for _, it in ipairs(todo) do
         if AMS.DB:GetMarket(it.id) then
@@ -70,19 +108,18 @@ function M:WatchAll(id)
 end
 
 -- Prices for every item in the conversion, scanned one after another.
-function M:ScanAll(inputID)
+function M:ScanAll(todo)
     if not AMS:AtAuctionHouse() then
         AMS:Print("open the auction house to price these.")
         return
     end
     if self.scanning then return end
-
-    local todo = AMS.Craft:ItemsFor(inputID)
-    if #todo == 0 then return end
+    if not todo or #todo == 0 then return end
 
     self.scanning = true
     local i = 0
     local function next_()
+        if not M.scanning then return end        -- Stop was pressed
         i = i + 1
         if i > #todo then
             M.scanning = false
@@ -107,6 +144,120 @@ function M:ScanAll(inputID)
         end)
     end
     next_()
+    self:Refresh()
+end
+
+-- Prices a whole profession's materials.
+--
+-- The per-item "Price it all" only knows about one conversion, which is no use
+-- on the Professions tab where there is no single item - and that is exactly
+-- where the "not priced" column is longest. This walks the profession's
+-- reagents instead, most-used first, so every recipe that shares one becomes
+-- costable at once.
+--
+-- Anything priced in the last half hour is left alone: a scan that recent is a
+-- price, and re-reading it is minutes spent to learn nothing.
+local FRESH_ENOUGH = 1800
+
+function M:ScanProfession(prof)
+    if not prof then return end
+    if not AMS:AtAuctionHouse() then
+        AMS:Print("open the auction house to price these.")
+        return
+    end
+    if self.scanning then return end
+
+
+    local all  = AMS.Craft:ProfessionReagents(prof)
+    local now  = U:Now()
+    local todo, skipped = {}, 0
+    for _, r in ipairs(all) do
+        local snap = AMS.DB:LastSnapshot(r.id)
+        if snap and (now - (snap.t or 0)) <= FRESH_ENOUGH then
+            skipped = skipped + 1
+        else
+            todo[#todo+1] = r
+            -- names are needed to search by, so ask for the uncached ones now
+            U:RequestItem(r.id)
+        end
+    end
+
+    if #todo == 0 then
+        AMS:Print("%s: all %d materials already priced within the last %d minutes.",
+            prof, skipped, math.floor(FRESH_ENOUGH / 60))
+        return
+    end
+
+    AMS:Print("%s: pricing |cffffd070%d|r material%s%s. Press Stop to break off - "..
+              "whatever has been read is kept.",
+        prof, #todo, #todo == 1 and "" or "s",
+        skipped > 0 and (", %d already fresh"):format(skipped) or "")
+
+    self.scanning = true
+    self.profScan = { prof = prof, list = todo, i = 0, done = 0, missed = 0, requeued = {} }
+
+    local function step()
+        local job = M.profScan
+        if not job or not M.scanning then return end
+
+        job.i = job.i + 1
+        if job.i > #job.list then
+            M.scanning = false
+            M.profScan = nil
+            AMS:Print("%s: priced |cffffd070%d|r material%s%s.",
+                prof, job.done, job.done == 1 and "" or "s",
+                job.missed > 0 and (", %d never turned up in the item cache"):format(job.missed) or "")
+            M:Refresh()
+            return
+        end
+
+        local entry = job.list[job.i]
+        local info  = U:ItemInfo(entry.id)
+        if not info then
+            -- The name is what the auction house searches on, so an item the
+            -- client has never heard of cannot be scanned. It was requested
+            -- when the run started, so give it one more pass at the end before
+            -- giving up on it.
+            if not job.requeued[entry.id] then
+                job.requeued[entry.id] = true
+                job.list[#job.list+1] = entry
+            else
+                job.missed = job.missed + 1
+            end
+            U:After(0.05, step)
+            return
+        end
+
+        if M._ui then
+            M._ui.header:SetSub(("pricing %s: %d/%d - %s"):format(
+                prof, job.i, #job.list, info.name))
+        end
+
+        -- Transient on purpose: this is a pricing sweep, not a decision to run
+        -- two hundred markets. The snapshot is stored either way, which is the
+        -- whole point - the watchlist just stays yours.
+        local market = AMS.DB:TransientMarket(info)
+        AMS.Analysis:ScanAndEvaluate(market, function(_, _, err)
+            if err then AMS:Debug("%s: %s", info.name, err) else job.done = job.done + 1 end
+            if not M.scanning then return end
+            M:Refresh()
+            U:After((AMS.db.scan and AMS.db.scan.pageDelay or 0.5) + 0.3, step)
+        end)
+    end
+
+    self:Refresh()
+    -- a beat for the item cache requests to land before the first search
+    U:After(1.0, step)
+end
+
+function M:StopScan()
+    if not self.scanning then return end
+    self.scanning = false
+    local job = self.profScan
+    self.profScan = nil
+    if AMS.Scanner and AMS.Scanner.Abort then AMS.Scanner:Abort("you stopped it") end
+    AMS:Print("stopped.%s", job and (" %d material%s priced before you did."):format(
+        job.done, job.done == 1 and "" or "s") or "")
     self:Refresh()
 end
 
@@ -143,13 +294,17 @@ function M:BuildUI(parent)
             return true
         end
         M.selected = info.id
+        M.selectedEnchant = nil
         M:Refresh()
         return true
     end
     slot:SetScript("OnReceiveDrag", takeCursorItem)
     slot:SetScript("OnClick", function(_, button)
         if takeCursorItem() then return end
-        if button == "RightButton" then M.selected = nil; M:Refresh() end
+        if button == "RightButton" then
+            M.selected, M.selectedEnchant = nil, nil
+            M:Refresh()
+        end
     end)
 
     header.text:ClearAllPoints()
@@ -158,22 +313,31 @@ function M:BuildUI(parent)
     local scanBtn = Skin:Button(header, "Price it all", 100, 22)
     scanBtn:SetPoint("RIGHT", -8, 0)
     scanBtn:SetScript("OnClick", function()
-        local id = M:CurrentInput()
-        if id then M:ScanAll(id) end
+        if M.scanning then return M:StopScan() end
+        -- What "all" means depends on what you are looking at: one conversion,
+        -- or the whole profession's material list.
+        if M.activeView == "prof" then
+            M:ScanProfession(M.profession)
+        else
+            M:ScanAll(M:CurrentItems())
+        end
     end)
-    Skin:AddTooltip(scanBtn, "Price every item in this conversion",
-        {"Scans the input and each output in turn so the maths has real prices to work from.",
-         "Anything not already watched gets added to your watchlist on the way through."})
+    Skin:AddTooltip(scanBtn, "Price what you are looking at",
+        {"On Made from / Used in: scans this conversion's item and each of its reagents.",
+         " ",
+         "On Professions: scans every material the profession uses, most-used first, so the",
+         "recipes that share one all become costable together. Anything priced in the last",
+         "half hour is skipped.",
+         " ",
+         "Every scan also records prices for everything else on the pages it reads, so a run",
+         "fills in far more than it asks for. Press again to stop - what has been read is kept."})
     ui.scanBtn = scanBtn
 
     -- Works with the auction house closed: it only adds the items to the
     -- watchlist so a later "Scan all" picks them up.
     local watchBtn = Skin:Button(header, "Watch all", 92, 22)
     watchBtn:SetPoint("RIGHT", scanBtn, "LEFT", -4, 0)
-    watchBtn:SetScript("OnClick", function()
-        local id = M:CurrentInput()
-        if id then M:WatchAll(id) end
-    end)
+    watchBtn:SetScript("OnClick", function() M:WatchAll(M:CurrentItems()) end)
     Skin:AddTooltip(watchBtn, "Watch every item in this conversion",
         {"Adds the crafted item and all of its reagents to your watchlist, so the next",
          "'Scan all' on the Watchlist tab prices the whole conversion for you.",
@@ -352,6 +516,28 @@ function M:BuildUI(parent)
     scrollBtn:Hide()
     ui.scrollBtn = scrollBtn
 
+    -- Turns "no price to compare against" into "here is what you would have to
+    -- ask". Off by default: a suggested price is arithmetic, not a market, and
+    -- it should never be mistaken for one.
+    local askBtn = Skin:TabButton(panel, "Ask price", 90, 20)
+    askBtn.text:ClearAllPoints()
+    askBtn.text:SetPoint("CENTER")
+    askBtn:SetPoint("LEFT", scrollBtn, "RIGHT", 6, 0)
+    askBtn:SetScript("OnClick", function()
+        AMS.db.craftAskPrice = not AMS.db.craftAskPrice
+        M:Refresh()
+    end)
+    Skin:AddTooltip(askBtn, "Show what to ask",
+        {"For anything with a materials cost but no market price, fills in the price that",
+         "would clear your required margin once the auction house has taken its cut.",
+         " ",
+         "It is shown in blue, because it is worked out rather than observed - a real price",
+         "only comes from a scan.",
+         " ",
+         "The margin comes from 'Required margin' in Settings."})
+    askBtn:Hide()
+    ui.askBtn = askBtn
+
     local outHdr = Skin:ListHeader(panel, OUT_COLS)
     outHdr:SetPoint("TOPLEFT", madeBtn, "BOTTOMLEFT", 0, -6)
     outHdr:SetPoint("RIGHT", panel, "RIGHT", -8, 0)
@@ -386,8 +572,16 @@ function M:BuildUI(parent)
             row:Set(3, d.total and tostring(d.total) or "-", C.textDim)
             row:Set(4, d.price and U:MoneyShort(d.price) or "not priced",
                        d.price and C.text or C.warn)
-            row:Set(5, d.net and d.net > 0 and U:MoneyShort(d.net) or "-",
-                       d.net and d.net > 0 and C.good or C.textDim)
+            if d.askPrice then
+                -- blue and prefixed: this is arithmetic, not a price anyone
+                -- has actually paid
+                row:Set(5, "ask "..U:MoneyShort(d.askPrice), C.info)
+            elseif d.netText then
+                row:Set(5, d.netText, d.netColor or C.textDim)
+            else
+                row:Set(5, d.net and d.net > 0 and U:MoneyShort(d.net) or "-",
+                           d.net and d.net > 0 and C.good or C.textDim)
+            end
             -- last column carries profit in the "used in" view and share of
             -- the total in the others
             if d.profitVal ~= nil then
@@ -403,16 +597,21 @@ function M:BuildUI(parent)
             -- deliberate exit to the Market tab.
             row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
             row:SetScript("OnClick", function(_, button)
-                -- An enchant we have never seen a scroll for has no item to
-                -- open. Say why rather than silently doing nothing.
-                if not d.id then
-                    if d.noItem then
-                        AMS:Print("no scroll for that enchant has been seen yet - press 'Find scrolls' at an auctioneer.")
+                -- An enchant with no scroll has no item to open on the
+                -- Market, but its reagents are right there - so a left click
+                -- still shows you what it is made from.
+                if d.enchant then
+                    if button == "RightButton" and d.id then
+                        M:OpenInMarket(d.id)
+                    else
+                        M:InspectEnchant(d.enchant)
                     end
                     return
                 end
+                if not d.id then return end
                 if button == "RightButton" then M:OpenInMarket(d.id) else
                     M.selected = d.id
+                    M.selectedEnchant = nil
                     -- Picking a row out of the profession browser means "show
                     -- me this one", so drop back to the per-item views rather
                     -- than redrawing the list you just clicked out of.
@@ -540,13 +739,23 @@ function M:RefreshProfessions()
     if pick == "Enchanting" then
         ui.scrollBtn:Show()
         ui.scrollBtn:SetEnabled(AMS:AtAuctionHouse() and not self.scanning)
+        ui.askBtn:ClearAllPoints()
+        ui.askBtn:SetPoint("LEFT", ui.scrollBtn, "RIGHT", 6, 0)
     else
         ui.scrollBtn:Hide()
+        ui.askBtn:ClearAllPoints()
+        ui.askBtn:SetPoint("LEFT", ui.openProfBtn, "RIGHT", 6, 0)
     end
+    ui.askBtn:Show()
+    ui.askBtn:SetSelected(AMS.db.craftAskPrice and true or false)
+    ui.askBtn.text:SetText(AMS.db.craftAskPrice
+        and ("Ask %d%%"):format(math.floor(AMS.Config:MinMargin() * 100))
+        or  "Ask price")
 
     ui.header:SetText("Craft - "..pick)
 
-    local rows = AMS.Craft:RecipesForProfession(pick)
+    local rows   = AMS.Craft:RecipesForProfession(pick)
+    local askOn  = AMS.db.craftAskPrice and true or false
     local priced, best, knownRows = 0, nil, 0
     local out = {}
     for _, r in ipairs(rows) do
@@ -558,10 +767,24 @@ function M:RefreshProfessions()
         out[#out+1] = {
             id = r.id, name = r.name, quality = r.quality,
             texture = r.texture, link = r.link,
-            suffix    = r.known and "  |cff4cd94cknown|r" or nil,
+            -- An enchant sits next to wands and oils in this list, so it is
+            -- tagged: the row is an enchant, and what you actually sell is the
+            -- scroll it goes on.
+            suffix    = (r.known and "  |cff4cd94cknown|r" or "")
+                        .. (r.isEnchant and "  |cff8a8a8escroll|r" or ""),
+            enchant   = r.enchant,
+            netText   = r.noScroll and "no scroll" or nil,
+            netColor  = r.noScroll and C.warn or nil,
+            -- worked out, not observed, so it is coloured differently and only
+            -- ever fills a cell that would otherwise be empty
+            askPrice  = (askOn and not r.value) and M:AskingPrice(r.cost) or nil,
             perOp     = r.made or 1,
             noItem    = r.isEnchant and not r.id or nil,
-            total     = r.mats,
+            -- "2/3" reads as "one reagent short of being costable"; a bare
+            -- count next to "not priced" tells you nothing you can act on
+            total     = (r.matsOk and r.matsOk < r.mats)
+                          and ("%d/%d"):format(r.matsOk, r.mats)
+                          or r.mats,
             price     = r.cost,
             net       = r.value,
             profitVal = r.profit,
@@ -602,7 +825,7 @@ function M:RefreshProfessions()
     elseif best then
         -- the row list holds names lazily, so the one we single out gets asked
         -- for explicitly rather than reaching the verdict as a nil
-        local bestName = U:ItemName(best.id, best.name)
+        local bestName = best.isEnchant and best.name or U:ItemName(best.id, best.name)
         ui.verdict:Set(("BEST IN %s: %s"):format(pick:upper(), bestName),
             ("%d of %d recipes can be priced. The best is %s at %s profit a craft, needing %d material%s.%s%s"):format(
                 priced, #rows, bestName, U:Money(best.profit, true), best.mats,
@@ -613,7 +836,7 @@ function M:RefreshProfessions()
             best.profit > 0 and C.good or C.warn)
     else
         ui.verdict:Set(("%s - %d RECIPES"):format(pick:upper(), #rows),
-            ("Nothing here can be priced yet - the crafted items and their reagents have never been scanned. Click any row to open it, then 'Watch all' and 'Price it all' to cost that branch.%s"):format(extra),
+            ("Nothing here can be priced yet - none of these materials have been scanned. Press 'Price it all' at an auctioneer and it walks the whole profession's materials, most-used first, so the recipes that share one all become costable together.%s"):format(extra),
             C.textDim)
     end
 end
@@ -635,15 +858,33 @@ function M:Refresh()
     end)
     ui.knownList:SetData(known)
 
-    local id = self:CurrentInput()
+    -- An enchant we have no scroll for has no item id at all, so it cannot be
+    -- the "current item" - but it still has reagents, a cost, and every reason
+    -- to be inspectable. It is tracked separately and takes priority while set.
+    local ench = self.selectedEnchant
+    local e, usedCount, id
+
+    if ench then
+        e  = AMS.Craft:EvaluateEnchant(ench)
+        if not e then
+            self.selectedEnchant, ench = nil, nil
+        else
+            id        = e.recipe.id                    -- the scroll, if we know it
+            usedCount = id and AMS.Craft:UsedInCount(id) or 0
+        end
+    end
+    if not ench then
+        id        = self:CurrentInput()
+        e         = id and AMS.Craft:EvaluateAny(id) or nil
+        usedCount = id and AMS.Craft:UsedInCount(id) or 0
+    end
+
     local slotInfo = id and U:ItemInfo(id)
     ui.slot:SetItem(slotInfo and slotInfo.link, slotInfo and slotInfo.texture)
-    ui.scanBtn:SetEnabled(id ~= nil and AMS:AtAuctionHouse() and not self.scanning)
-    ui.watchBtn:SetEnabled(id ~= nil)
+    -- an enchant is watchable and priceable through its reagents even with no
+    -- scroll to point at
+    ui.watchBtn:SetEnabled(id ~= nil or ench ~= nil)
     ui.forgetBtn:SetEnabled(id ~= nil)
-
-    local e         = id and AMS.Craft:EvaluateAny(id) or nil
-    local usedCount = id and AMS.Craft:UsedInCount(id) or 0
 
     -- Which views this item actually has, and which one to show. Professions is
     -- always available: it is the one view that is not about the selected item,
@@ -653,6 +894,18 @@ function M:Refresh()
     if view == "made" and not hasMade then view = nil end
     if view == "used" and not hasUsed then view = nil end
     view = view or (hasMade and "made") or (hasUsed and "used") or "prof"
+
+    self.activeView = view
+
+    -- Set after the view has settled: what "Price it all" means depends on it.
+    if self.scanning then
+        ui.scanBtn:SetText("Stop")
+        ui.scanBtn:SetEnabled(true)
+    else
+        ui.scanBtn:SetText("Price it all")
+        ui.scanBtn:SetEnabled(AMS:AtAuctionHouse()
+            and (view == "prof" or id ~= nil or ench ~= nil))
+    end
 
     ui.madeBtn:SetSelected(view == "made")
     ui.usedBtn:SetSelected(view == "used")
@@ -669,8 +922,12 @@ function M:Refresh()
     ui.profDrop:Hide()
     ui.openProfBtn:Hide()
     ui.scrollBtn:Hide()
+    ui.askBtn:Hide()
 
-    if not id then
+    -- "Nothing selected" is not the same as "no item id". An enchant nobody has
+    -- listed a scroll for has no item id by definition, and it was landing here
+    -- - blank table, blank title - despite having reagents and a cost to show.
+    if not id and not ench then
         ui.header:SetText("Craft")
         if not self.scanning then ui.header:SetSub("nothing learned yet") end
         ui.verdict:Set("NOTHING LEARNED YET",
@@ -681,7 +938,7 @@ function M:Refresh()
     end
 
     -- ---------- what it goes into ----------
-    if view == "used" then
+    if view == "used" and id then
         local uname, uquality = U:ItemName(id)
         ui.header:SetText("Craft - "..U:ColorItemName(uname, uquality))
         if not self.scanning then
@@ -738,11 +995,12 @@ function M:Refresh()
     ui.header:SetText("Craft - "..U:ColorItemName(itemName, itemQuality))
     if not self.scanning then
         if e.isRecipe then
-            ui.header:SetSub(("%s%s, makes %s%s"):format(
+            ui.header:SetSub(("%s%s, makes %s%s%s"):format(
                 rec.profession or "?",
                 rec.isScroll and " scroll" or " recipe",
                 e.made == 1 and "1" or ("%.1f"):format(e.made),
-                (e.routes or 1) > 1 and ("  |  %d ways to make it"):format(e.routes) or ""))
+                (e.routes or 1) > 1 and ("  |  %d ways to make it"):format(e.routes) or "",
+                rec.noScroll and "  |  no scroll seen yet" or ""))
         else
             ui.header:SetSub(("%s, %d operation%s learned"):format(
                 rec.method or "?", e.ops, e.ops == 1 and "" or "s"))
@@ -772,7 +1030,17 @@ function M:Refresh()
     ui.outList:SetData(rows)
 
     -- ---------- the verdict ----------
-    local missing = AMS.Craft:MissingPrices(id)
+    -- An enchant with no scroll has no item id to look up, so its unpriced
+    -- reagents are read straight off the evaluation instead.
+    local missing
+    if ench then
+        missing = {}
+        for _, r in ipairs(e.rows) do
+            if not r.price then missing[#missing+1] = { id = r.id, name = r.name } end
+        end
+    else
+        missing = AMS.Craft:MissingPrices(id)
+    end
     if #missing > 0 then
         local names = {}
         for i = 1, math.min(3, #missing) do
@@ -789,16 +1057,32 @@ function M:Refresh()
         return
     end
 
+    -- An enchant nobody has a scroll for can still be fully costed, and the
+    -- useful question then is not "what is the profit" but "what would it have
+    -- to fetch". Answer that rather than showing a row of dashes.
+    if ench and not e.value then
+        local ask = e.cost and M:AskingPrice(e.cost) or nil
+        ui.verdict:Set(("MATERIALS %s"):format(e.cost and U:Money(e.cost, true) or "?"),
+            ask and ("No scroll for this enchant has been seen, so there is no market price to compare against. "..
+                     "At %s%% over materials and after the %s%% cut you would have to ask %s for the scroll. "..
+                     "Press 'Find scrolls' on the Professions view at an auctioneer to get a real price.")
+                    :format(math.floor(AMS.Config:MinMargin() * 100),
+                            math.floor(AMS.Config:Cut() * 100), U:Money(ask, true))
+                or  "Some of its reagents have never been scanned, so even the materials cost is incomplete.",
+            ask and C.info or C.warn)
+        return
+    end
+
     local what = e.isRecipe
         and ("Making one %s"):format(rec.name or "of these")
         or  ("%.1f %s per operation"):format(e.inputPer or 0, rec.name or "input")
 
-    -- a scroll needs a vellum the spell data does not list as a reagent
+    -- A scroll also needs a vellum, which is not costed here and says so:
+    -- there are six of them on this client and which one an enchant takes is
+    -- not in the spell data, so a guess would be wrong more often than right.
     local extra = ""
-    if rec.isScroll then
-        extra = rec.vellumMissing
-            and " An Enchanting Vellum is also needed; it is not in your item cache yet so its cost is not counted."
-            or  " The Enchanting Vellum is included in the materials."
+    if rec.needsVellum then
+        extra = " A vellum is needed on top of these materials - Armor or Weapon, at the right grade - and its cost is not counted here."
     end
     if (e.routes or 1) > 1 then
         extra = extra .. (" Costed by the cheapest of %d ways to make it."):format(e.routes)

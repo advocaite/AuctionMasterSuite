@@ -8,7 +8,7 @@ local AMS = ns
 
 AMS.NAME    = "Auction Master Suite"
 AMS.SHORT   = "AMS"
-AMS.VERSION = "0.24.0"
+AMS.VERSION = "0.28.0"
 AMS.AUTHOR  = "rodneywowwow"
 
 -- Module registry. Modules call AMS:RegisterModule(id, tbl).

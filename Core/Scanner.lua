@@ -312,6 +312,17 @@ local function finishScan(err)
             if bu then return false end
             return (a.name or "") < (b.name or "")
         end)
+        -- Every scan prices everything it saw, not just what it was asked for.
+        -- A partial-name search reads whole pages of other people's items and
+        -- those are real, current prices; a reagent should not sit unpriced
+        -- because we only ever met it sideways.
+        --
+        -- The scan's own item is skipped: Analysis writes it a full snapshot
+        -- with target, buy plan and verdict, and a bare price on top of that
+        -- would bury the real one.
+        local primary = j.exact and j.entries[1] and j.entries[1].id or nil
+        AMS.DB:ObserveEntries(j.entries, primary)
+
         if j.onDone then j.onDone(j.entries, nil) end
     end
 end

@@ -98,6 +98,36 @@ function DB:MarketCount()
     return U:Count(AMS.data.markets)
 end
 
+-- A market object that is NOT added to the watchlist.
+--
+-- Scanning needs something market-shaped to evaluate against, but a pricing
+-- sweep over two hundred reagents must not put two hundred rows on the
+-- watchlist. Anything already watched is returned as-is, so a sweep never
+-- shadows a market you actually run.
+function DB:TransientMarket(info)
+    if not info or not info.id then return nil end
+    local m = AMS.data.markets[info.id]
+    if m then return m end
+
+    local mk = AMS.db.market
+    return {
+        id        = info.id,
+        name      = info.name,
+        link      = info.link,
+        texture   = info.texture,
+        quality   = info.quality,
+        maxStack  = info.maxStack or 20,
+        target    = 0,
+        maxInvest = 0,
+        maxStock  = 0,
+        stack     = mk and mk.defaultStack or 1,
+        duration  = mk and mk.defaultDuration or 3,
+        buyMaxStack = mk and mk.buyMaxStack or 0,
+        buyOrder    = mk and mk.buyOrder or "cheapest",
+        transient = true,
+    }
+end
+
 -- Creates the market if it does not exist yet. `info` comes from Util:ItemInfo.
 function DB:EnsureMarket(info)
     if not info or not info.id then return nil end
@@ -200,16 +230,76 @@ end
 -- Scan history
 -- =============================================================================
 
-function DB:AddSnapshot(itemID, snap)
+function DB:AddSnapshot(itemID, snap, silent)
     if not itemID or not snap then return end
     local list = AMS.data.scans[itemID]
     if not list then list = {}; AMS.data.scans[itemID] = list end
     list[#list+1] = snap
+
+    local m   = self:GetMarket(itemID)
     local cap = (AMS.db.history and AMS.db.history.maxScans) or 250
+    -- An item you actually run gets the full history. Everything else is here
+    -- because it happened to be on a page we read, and keeping two hundred
+    -- snapshots of every item on the auction house is how a SavedVariables file
+    -- becomes a megabyte of nothing anyone asked for.
+    if not m then cap = math.min(cap, 40) end
     while #list > cap do table.remove(list, 1) end
 
-    local m = self:GetMarket(itemID)
     if m then m.lastScan = snap.t end
+
+    -- A new snapshot is a new price for this item, and the price of one item
+    -- changes what every recipe containing it costs. Anything holding costed
+    -- figures has to hear about it - this used to be fired only when history
+    -- was WIPED, so cached craft costs were never rebuilt after a scan and two
+    -- tabs could disagree about whether the same item had a price.
+    --
+    -- silent is for bulk observation, which fires once at the end rather than
+    -- two hundred times.
+    if not silent then AMS:Fire("HISTORY_CHANGED", itemID) end
+end
+
+-- Records a price for every item in a set of scanned auctions.
+--
+-- Any scan reads whole pages, and a page is full of items that were not what
+-- you asked for. Throwing those rows away meant a reagent could sit at "not
+-- priced" for weeks despite the addon having read its auctions a dozen times.
+--
+-- So every row we ever see now leaves a price behind. `skipID` is the item the
+-- scan was actually about, which gets the full analysed snapshot elsewhere and
+-- must not be recorded twice.
+function DB:ObserveEntries(entries, skipID)
+    if not entries or #entries == 0 then return 0 end
+
+    local byItem = {}
+    for _, e in ipairs(entries) do
+        if e.id and e.id ~= skipID and e.unit and e.unit > 0 then
+            local g = byItem[e.id]
+            if not g then g = { rows = {}, supply = 0, min = nil }; byItem[e.id] = g end
+            g.rows[#g.rows+1] = e
+            g.supply = g.supply + (e.count or 1)
+            if not g.min or e.unit < g.min then g.min = e.unit end
+        end
+    end
+
+    local now, n = U:Now(), 0
+    for id, g in pairs(byItem) do
+        n = n + 1
+        self:AddSnapshot(id, {
+            t        = now,
+            min      = g.min or 0,
+            median   = U:WeightedMedian(g.rows) or 0,
+            supply   = g.supply,
+            mine     = 0,
+            auctions = #g.rows,
+            -- Seen in passing rather than measured: no target, no buy plan, no
+            -- verdict. Anything reading these has to treat them as a price and
+            -- nothing more.
+            observed = true,
+        }, true)
+    end
+
+    if n > 0 then AMS:Fire("HISTORY_CHANGED") end
+    return n
 end
 
 function DB:GetSnapshots(itemID)

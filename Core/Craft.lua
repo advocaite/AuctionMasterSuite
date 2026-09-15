@@ -236,7 +236,44 @@ end
 -- vellum it becomes "Scroll of <enchant name>", and that naming is systematic
 -- enough to match on - which is the only handle the client gives us, since the
 -- scroll's own item data lives server-side.
-local VELLUM = "Enchanting Vellum"
+--
+-- The vellum itself is deliberately NOT costed. There is no single one: this
+-- client has Armor Vellum and Weapon Vellum in three grades each, and which one
+-- an enchant needs depends on the enchant and its level - none of which is in
+-- the spell data. Guessing would put a wrong number in every scroll's cost, and
+-- carrying an unpriceable phantom reagent made every enchant read "not priced"
+-- over a material that was never there. So materials are the spell's reagents,
+-- and the vellum is called out as an extra you add yourself.
+
+-- One enchant, described the same way a recipe is, so everything that can cost
+-- a recipe can cost an enchant. `id` is the scroll's item id when we have met
+-- one and nil when we have not - the reagents do not care either way, which is
+-- the point: an enchant with no scroll still has a materials cost.
+function Craft:EnchantRecipe(enchName)
+    if not U or not enchName then return nil end
+    local d = (AMS.EnchantData or {})[enchName]
+    if not d then return nil end
+
+    local reagents = reagentList(d.r)
+    local scrollID = (AMS.data.scrolls or {})[enchName]
+    return {
+        id            = scrollID,
+        enchant       = enchName,
+        spell         = d.s,
+        profession    = "Enchanting",
+        skill         = d.k,
+        madeMin       = 1,
+        madeMax       = 1,
+        reagents      = reagents,
+        name          = enchName,
+        scroll        = self:EnchantScrollName(enchName),
+        known         = (AMS.data.enchants or {})[enchName] ~= nil,
+        noScroll      = scrollID == nil,
+        isScroll      = true,
+        isEnchant     = true,
+        needsVellum   = true,   -- an extra you buy yourself; see the note above
+    }
+end
 
 function Craft:ScrollRecipe(itemID)
     if not U or not AMS.EnchantData or not itemID then return nil end
@@ -245,8 +282,7 @@ function Craft:ScrollRecipe(itemID)
 
     local enchName = info.name:match("^Scroll of (.+)$")
     if not enchName then return nil end
-    local d = AMS.EnchantData[enchName]
-    if not d then return nil end
+    if not AMS.EnchantData[enchName] then return nil end
 
     -- remember the id so the reverse lookup can find scrolls we have met
     if AMS.data.scrolls[enchName] ~= itemID then
@@ -254,20 +290,12 @@ function Craft:ScrollRecipe(itemID)
         self:InvalidateUsedIndex()
     end
 
-    local reagents = reagentList(d.r)
-    -- the vellum is not a spell reagent, so it is looked up by name rather
-    -- than by an id hardcoded on a guess
-    local vel = U:ItemInfo(VELLUM)
-    if vel and vel.id then
-        reagents[#reagents+1] = { id = vel.id, count = 1, name = vel.name }
+    local rec = self:EnchantRecipe(enchName)
+    if rec then
+        rec.id   = itemID
+        rec.name = info.name          -- reached by the scroll, so name it as one
     end
-
-    return {
-        id = itemID, spell = d.s, profession = "Enchanting", skill = d.k,
-        madeMin = 1, madeMax = 1, reagents = reagents,
-        name = info.name, known = false, isScroll = true,
-        vellumMissing = not (vel and vel.id),
-    }
+    return rec
 end
 
 -- Every way to make this item. Several spells often produce the same thing and
@@ -676,49 +704,87 @@ function Craft:EnchantScrollName(enchantName)
     return "Scroll of "..enchantName
 end
 
+-- One enchant, costed. Same shape as EvaluateRoute so the tab can show it in
+-- the Made-from view exactly like a recipe.
+--
+-- The cost is reported even when the vellum is unknown or unpriced, flagged
+-- rather than thrown away: a materials cost that is one vellum short is still
+-- the number you wanted, and nil is not.
+function Craft:EvaluateEnchant(enchName)
+    local rec = self:EnchantRecipe(enchName)
+    if not rec then return nil end
+
+    local cut = AMS.Config:Cut()
+    local rows, cost, unpriced = {}, 0, 0
+    for _, g in ipairs(rec.reagents) do
+        local price = buyPrice(g.id)
+        local total = price and (price * g.count) or 0
+        if not price then unpriced = unpriced + 1 else cost = cost + total end
+        local nm, quality, tex, link = U:ItemName(g.id, g.name)
+        rows[#rows+1] = {
+            id = g.id, name = nm, quality = quality, texture = tex, link = link,
+            perOp = g.count, price = price, net = total,
+        }
+    end
+    table.sort(rows, function(a, b) return (b.net or 0) < (a.net or 0) end)
+
+    local outPrice = rec.id and sellPrice(rec.id) or nil
+    local value    = outPrice and math.floor(outPrice * (1 - cut)) or nil
+
+    local e = {
+        recipe    = rec,
+        isRecipe  = true,
+        isEnchant = true,
+        made      = 1,
+        outPrice  = outPrice,
+        cost      = (unpriced == 0) and cost or nil,
+        -- What we do know, even if something is missing. This is what makes a
+        -- no-scroll enchant readable instead of a row of dashes.
+        baseCost  = cost > 0 and cost or nil,
+        value     = value,
+        unpriced  = unpriced,
+        mats      = #rec.reagents,
+        rows      = rows,
+    }
+    if e.cost and e.value and e.cost > 0 then
+        e.profit = e.value - e.cost
+        e.roi    = e.profit / e.cost
+    end
+    return e
+end
+
 function Craft:EnchantRows()
     if not U then return {} end
 
-    local cut      = AMS.Config:Cut()
-    local vellum   = U:ItemInfo(VELLUM)
-    local velPrice = vellum and buyPrice(vellum.id) or nil
-
     local out = {}
-    for name, d in pairs(AMS.EnchantData or {}) do
-        local cost, unpriced, mats = 0, 0, 0
-        for i = 1, #d.r, 2 do
-            mats = mats + 1
-            local price = buyPrice(d.r[i])
-            if price then cost = cost + price * d.r[i + 1] else unpriced = unpriced + 1 end
+    for name in pairs(AMS.EnchantData or {}) do
+        local e = self:EvaluateEnchant(name)
+        if e then
+            local rec = e.recipe
+            out[#out + 1] = {
+                id        = rec.id,
+                enchant   = name,
+                -- The enchant is the thing; the scroll is only how it gets to
+                -- the auction house. Naming every row "Scroll of Enchant ..."
+                -- made the whole profession one column of identical prefix.
+                name      = name,
+                scroll    = rec.scroll,
+                noScroll  = rec.noScroll,
+                isEnchant = true,
+                skill     = rec.skill,
+                mats      = e.mats,
+                matsOk    = e.mats - e.unpriced,
+                made      = 1,
+                known     = rec.known,
+                cost      = e.cost,
+                baseCost  = e.baseCost,
+                value     = e.value,
+                profit    = e.profit,
+                roi       = e.roi,
+                unpriced  = e.unpriced,
+                needsVellum = rec.needsVellum,
+            }
         end
-        -- The vellum is not a spell reagent, but you cannot sell the enchant
-        -- without one, so leaving it out would flatter every scroll.
-        mats = mats + 1
-        if velPrice then cost = cost + velPrice else unpriced = unpriced + 1 end
-
-        local scrollID = (AMS.data.scrolls or {})[name]
-        local outPrice = scrollID and sellPrice(scrollID) or nil
-        local value    = outPrice and math.floor(outPrice * (1 - cut)) or nil
-        local realCost = (unpriced == 0) and cost or nil
-
-        local row = {
-            id       = scrollID,
-            enchant  = name,
-            name     = self:EnchantScrollName(name),
-            isEnchant= true,
-            skill    = d.k,
-            mats     = mats,
-            made     = 1,
-            known    = (AMS.data.enchants or {})[name] ~= nil,
-            cost     = realCost,
-            value    = value,
-            unpriced = unpriced,
-        }
-        if realCost and value and realCost > 0 then
-            row.profit = value - realCost
-            row.roi    = row.profit / realCost
-        end
-        out[#out + 1] = row
     end
     return out
 end
@@ -756,10 +822,62 @@ function Craft:ScanForScrolls(onDone)
             Craft:InvalidateUsedIndex()
             AMS:Fire("CRAFT_CHANGED")
         end
-        AMS:Print("scroll sweep: |cffffd070%d|r new scroll%s matched to an enchant.",
-            found, found == 1 and "" or "s")
+
+        -- The sweep read every scroll on the board, and every row it read was
+        -- priced on the way through, so the sell side fills in from the same
+        -- pass that found the ids. Report it, because "matched 40 scrolls" with
+        -- no mention of prices reads like half a job.
+        local priced, total = 0, 0
+        for ench, itemID in pairs(AMS.data.scrolls or {}) do
+            if (AMS.EnchantData or {})[ench] then
+                total = total + 1
+                if sellPrice(itemID) then priced = priced + 1 end
+            end
+        end
+
+        AMS:Print("scroll sweep: |cffffd070%d|r new scroll%s matched - %d of %d known scrolls now have a price.",
+            found, found == 1 and "" or "s", priced, total)
         if onDone then onDone(found) end
     end, { exact = false })
+end
+
+-- Every distinct reagent a profession consumes, most-used first.
+--
+-- Ordered by how many recipes want it, because that is the order that makes the
+-- list costable fastest: a reagent in two hundred recipes unlocks two hundred
+-- rows and one in a single recipe unlocks one. Stopping a pricing run half way
+-- through then still leaves you with the half that mattered.
+function Craft:ProfessionReagents(prof)
+    if not prof then return {} end
+    if not profIndex then buildProfIndex() end
+
+    local uses = {}
+    local function bump(id)
+        if id then uses[id] = (uses[id] or 0) + 1 end
+    end
+
+    for _, id in ipairs(profIndex[prof] or {}) do
+        local rp = self:GetRecipe(id)
+        if rp then
+            for _, g in ipairs(rp.reagents) do bump(g.id) end
+        end
+    end
+
+    -- Enchants are not in the index, and their reagents are the whole cost side
+    -- of the profession.
+    if prof == "Enchanting" then
+        for _, d in pairs(AMS.EnchantData or {}) do
+            for i = 1, #d.r, 2 do bump(d.r[i]) end
+        end
+    end
+
+    local out = {}
+    for id, n in pairs(uses) do out[#out+1] = { id = id, uses = n } end
+    table.sort(out, function(a, b)
+        if a.uses ~= b.uses then return a.uses > b.uses end
+        return a.id < b.id
+    end)
+    return out
 end
 
 -- Everything one profession can make, costed. Best profit first, with anything
@@ -779,9 +897,20 @@ function Craft:RecipesForProfession(prof)
     if profRowCache[prof] then return profRowCache[prof] end
     if not profIndex then buildProfIndex() end
 
+    -- A learned Enchanting recipe whose output is a scroll is the same thing as
+    -- the enchant that makes it, reached from the other side. Listing both put
+    -- "Enchant 2H Weapon - Impact" and "Scroll of Enchant 2H Weapon - Impact"
+    -- on the board as if they were separate opportunities.
+    local coveredByEnchant = {}
+    if prof == "Enchanting" then
+        for ench, scrollID in pairs(AMS.data.scrolls or {}) do
+            if (AMS.EnchantData or {})[ench] then coveredByEnchant[scrollID] = true end
+        end
+    end
+
     local out = {}
     for _, id in ipairs(profIndex[prof] or {}) do
-        local rp = self:GetRecipe(id)
+        local rp = (not coveredByEnchant[id]) and self:GetRecipe(id) or nil
         if rp then
             local e = self:EvaluateRecipe(id)
             -- Deliberately a plain lookup, not a request: a profession is five
@@ -796,7 +925,10 @@ function Craft:RecipesForProfession(prof)
                 texture = info and info.texture,
                 link    = info and info.link,
                 skill   = rp.skill,
-                mats    = #rp.reagents,
+                mats    = e and #e.rows or #rp.reagents,
+                -- how many of those reagents we actually have a price for, so
+                -- "not priced" says how far off it is instead of just no
+                matsOk  = e and (#e.rows - (e.unpriced or 0)) or nil,
                 made    = ((rp.madeMin or 1) + (rp.madeMax or 1)) / 2,
                 known   = rp.known,
                 cost    = e and e.cost,
@@ -948,6 +1080,17 @@ function Craft:MissingPrices(id)
         end
     end
     return need
+end
+
+-- The same, for an enchant. It has reagents whether or not anyone has ever
+-- listed its scroll, so it can always be watched and priced.
+function Craft:ItemsForEnchant(enchName)
+    local rec = self:EnchantRecipe(enchName)
+    if not rec then return {} end
+    local out = {}
+    if rec.id then out[#out+1] = { id = rec.id, name = rec.scroll } end
+    for _, g in ipairs(rec.reagents) do out[#out+1] = { id = g.id, name = g.name } end
+    return out
 end
 
 -- Every item involved in a conversion, for the "price it all" sweep.
