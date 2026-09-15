@@ -7,7 +7,7 @@ It tells you what it costs to clear every listing under your price, buys them in
 your stock, and keeps an honest ledger of what you actually made — per item, per character, over
 time. Dark/gold themed, self-contained, no dependencies.
 
-> **Status:** v0.20.0 — actively developed. Bug reports and feature requests very welcome.
+> **Status:** v0.24.0 — actively developed. Bug reports and feature requests very welcome.
 >
 > **Repo:** https://github.com/advocaite/AuctionMasterSuite — open an
 > [Issue](https://github.com/advocaite/AuctionMasterSuite/issues) for anything broken or missing.
@@ -113,7 +113,7 @@ ninety times a day.
 | **My Auctions** | Everything you have listed right now, what is about to expire, and the gold sitting in your mailbox from sales. |
 | **Books** | The ledger. What you bought, what you sold, what you actually made — per item and per character, including items you never watched. |
 | **Insights** | Charts. Price history, sell-through rate, where your gold came from, and alerts when something is trading well below its normal price. |
-| **Craft** | What an item is made from, what makes it, and — the useful direction — what it is **used in**. Costs every route with live prices and picks the cheapest. |
+| **Craft** | Three views of the same data: what an item is **made from**, what it is **used in** (the direction that finds you markets), and a whole **profession** at a time — everything it can make and what each needs, yours or not. Costs every route with live prices and picks the cheapest. |
 | **History** | Every scan snapshot kept per item, so you can see a market move rather than guess. |
 | **Watchlist** | All your markets, ranked by return per day. Search as you type. |
 | **Settings** | Defaults for scanning, buying, posting and alerts. Each watched item can override them. |
@@ -150,11 +150,20 @@ database was extracted from your own game client's `Spell.dbc` and ships as a da
 - **3,443** craftable items
 - **3,667** recipes (several spells often make the same item — it costs each one and picks the
   cheapest at today's prices)
-- **265** enchants, matched up to their `Scroll of ...` form and the vellum they need
+- **265** enchants, costed as the `Scroll of ...` you would sell: the spell's reagents plus the
+  Enchanting Vellum it goes on
 
 On top of that it learns things the client does not record: prospecting, milling and disenchanting
 yields are worked out by watching your bags before and after, so the more you do the better its
 numbers get.
+
+The recipe data is all item IDs, and your client only knows the name of an item it has actually
+seen — which is why a reagent you have never owned starts out as `item #37663`. The addon asks the
+server for the ones on screen and fills the names in as they arrive, a few at a time so nothing
+gets throttled.
+
+Every table that lists items shows its icon, and hovering one gives you the real item tooltip —
+which is also the request, so it resolves that item immediately rather than waiting its turn.
 
 ---
 

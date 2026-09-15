@@ -196,6 +196,95 @@ function U:ItemInfo(idOrLink)
     }
 end
 
+-- ---------- Item cache priming ----------
+--
+-- GetItemInfo only answers for items this client has already seen. Everything
+-- else comes back nil, which is why a recipe full of reagents you have never
+-- owned reads as a column of "item #37663" - the addon knows the id perfectly
+-- well, it just has no name to put next to it.
+--
+-- The client will fetch an item from the server if you ask it to draw one, and
+-- a tooltip nobody can see counts as asking. That is the whole trick, and it is
+-- what AtlasLoot has always done to fill in a loot page.
+--
+-- 3.3.5 has no event for the answer arriving, so the queue is simply re-tested
+-- on a ticker until the name turns up. Requests are spread out rather than
+-- fired in one burst: a few hundred at once is the sort of thing a server
+-- throttles, and the answers are no use if they are dropped.
+local scanTip = CreateFrame("GameTooltip", "AuctionMasterSuiteScanTooltip", UIParent, "GameTooltipTemplate")
+scanTip:SetOwner(WorldFrame, "ANCHOR_NONE")
+
+local pending, order, cacheTicker = {}, {}, nil
+
+local QUERY_PER_TICK = 8      -- asked for per tick
+local MAX_ATTEMPTS   = 10     -- a removed or mistyped id never resolves; stop asking
+local TICK           = 0.3
+
+local function drainItemQueue()
+    local asked, i, got = 0, 1, false
+
+    while i <= #order and asked < QUERY_PER_TICK do
+        local id    = order[i]
+        local tries = pending[id]
+        if not tries then
+            table.remove(order, i)
+        elseif GetItemInfo(id) then
+            pending[id] = nil
+            table.remove(order, i)
+            got = true
+        elseif tries >= MAX_ATTEMPTS then
+            pending[id] = nil
+            table.remove(order, i)
+        else
+            pending[id] = tries + 1
+            scanTip:SetOwner(WorldFrame, "ANCHOR_NONE")
+            -- An id the server has no item for throws rather than returning
+            -- nothing, and the recipe data does contain the odd dead reagent.
+            -- One bad row must not take the whole queue down with it.
+            pcall(scanTip.SetHyperlink, scanTip, "item:"..id..":0:0:0:0:0:0:0")
+            asked = asked + 1
+            i = i + 1
+        end
+    end
+
+    -- One message for the whole tick, not one per item: every open list redraws
+    -- on it and a hundred reagents landing together should cost one redraw.
+    if got then AMS:Fire("ITEM_CACHED") end
+
+    if #order == 0 and cacheTicker then
+        cacheTicker:Cancel()
+        cacheTicker = nil
+    end
+end
+
+-- Ask the server for an item we have no name for. Returns true if it was
+-- already cached and nothing needed doing.
+function U:RequestItem(id)
+    id = tonumber(id)
+    if not id or id <= 0 then return false end
+    if GetItemInfo(id) then return true end
+    if pending[id] == nil then
+        pending[id] = 0
+        order[#order + 1] = id
+    end
+    if not cacheTicker then cacheTicker = self:Ticker(TICK, drainItemQueue) end
+    return false
+end
+
+-- How many items are still waiting on the server, for a panel that wants to
+-- say so rather than looking broken.
+function U:ItemsPending() return #order end
+
+-- Name, quality and icon for an item that may not be cached. Asks for it in the
+-- background and hands back a placeholder meanwhile, so no list sits on
+-- "item #37663" for longer than the server takes to answer.
+function U:ItemName(id, fallback)
+    local info = self:ItemInfo(id)
+    if info then return info.name, info.quality, info.texture, info.link end
+    self:RequestItem(id)
+    return fallback or ("item #"..tostring(id)), nil, nil, nil
+end
+
 local QUALITY_HEX = {
     [0] = "9d9d9d", [1] = "ffffff", [2] = "1eff00",
     [3] = "0070dd", [4] = "a335ee", [5] = "ff8000", [6] = "e6cc80",
@@ -207,6 +296,19 @@ end
 
 function U:ColorItemName(name, quality)
     return self:QualityColor(quality) .. (name or "?") .. "|r"
+end
+
+-- One item cell, done the same way in every table: sets the row's icon and
+-- hands back the coloured name for its text.
+--
+-- Worth having as one call rather than three lines per table. It means every
+-- list in the addon resolves an unknown item, shows its icon, and carries a
+-- real tooltip without any of them having to remember to - and a table whose
+-- rows have no icon slot still gets the right text.
+function U:ItemCell(row, id, fallbackName, fallbackQuality)
+    local name, quality, texture, link = self:ItemName(id, fallbackName)
+    if row and row.SetIcon then row:SetIcon(texture, link, id) end
+    return self:ColorItemName(name, quality or fallbackQuality)
 end
 
 -- ---------- tables ----------

@@ -26,7 +26,8 @@ local MAX_LEDGER = 3000
 -- Every per-realm table. Anything read as AMS.data.<name> MUST be listed here
 -- or it is simply nil at runtime; the toccheck script cross-checks the two.
 local DATA_TABLES = { "markets", "scans", "buys", "sales", "posts", "expiries",
-                      "mailSeen", "pending", "auctions", "crafts", "recipes", "scrolls" }
+                      "mailSeen", "pending", "auctions", "crafts", "recipes", "scrolls",
+                      "enchants" }
 
 -- Scope: settings live account-wide in AMS.db. Trading data lives per REALM in
 -- AMS.data, shared by every character on that realm.

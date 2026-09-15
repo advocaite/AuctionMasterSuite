@@ -22,6 +22,12 @@ function M:OnInit()
     AMS:Subscribe("LEDGER_CHANGED",  function() M:Refresh() end)
     AMS:Subscribe("MARKETS_CHANGED", function() M:Refresh() end)
     AMS:Subscribe("CURRENT_CHANGED", function() M:Refresh() end)
+    -- item names arriving from the server; only redraw while the tab is up
+    AMS:Subscribe("ITEM_CACHED", function()
+        local p = M._ui and M._ui.panel
+        if p and not p:IsVisible() then return end
+        M:Refresh()
+    end)
 end
 
 function M:BuildUI(parent)
@@ -29,7 +35,7 @@ function M:BuildUI(parent)
     C = Skin.COLOR
 
     local panel = CreateFrame("Frame", nil, parent)
-    local ui = {}
+    local ui = { panel = panel }
     self._ui = ui
 
     local header = Skin:Header(panel, "Books")
@@ -151,14 +157,19 @@ function M:BuildUI(parent)
 
     local itemCols
     local itemList = Skin:ScrollList(panel, 19,
-        function(p) return Skin:Row(p, itemCols and itemCols() or ITEM_COLS) end,
+        function(p)
+            local r = Skin:Row(p, itemCols and itemCols() or ITEM_COLS)
+            r:EnableIcon(1, 14)
+            return r
+        end,
         function(row, d, idx, alt)
             if not d then
                 for i = 1, #ITEM_COLS do row:Set(i, "") end
+                row:SetIcon(nil)
                 row:SetScript("OnClick", nil)
                 return
             end
-            row:Set(1, U:ColorItemName(d.name, d.quality))
+            row:Set(1, U:ItemCell(row, d.id, d.name, d.quality))
             row:Set(2, tostring(d.stock))
             row:Set(3, d.avgBuy  > 0 and U:MoneyShort(d.avgBuy)  or "-")
             row:Set(4, d.avgSale > 0 and U:MoneyShort(d.avgSale) or "-")
@@ -218,13 +229,21 @@ function M:BuildUI(parent)
 
     local feedCols
     local feedList = Skin:ScrollList(panel, 18,
-        function(p) return Skin:Row(p, feedCols and feedCols() or FEED_COLS) end,
+        function(p)
+            local r = Skin:Row(p, feedCols and feedCols() or FEED_COLS)
+            r:EnableIcon(3, 12)
+            return r
+        end,
         function(row, d, idx, alt)
-            if not d then for i = 1, #FEED_COLS do row:Set(i, "") end return end
+            if not d then
+                for i = 1, #FEED_COLS do row:Set(i, "") end
+                row:SetIcon(nil)
+                return
+            end
             local k = KIND[d.kind] or { text = d.kind, color = C.text }
             row:Set(1, U:DateShort(d.t), C.textDim)
             row:Set(2, k.text, k.color)
-            row:Set(3, d.name or "?", C.text)
+            row:Set(3, U:ItemCell(row, d.id, d.name), C.text)
             row:Set(4, tostring(d.count or d.stack or 0), C.text)
             row:Set(5, d.who or "-", d.who and C.accent or C.textDim)
             row:Set(6, d.amount > 0 and U:MoneyShort(d.amount) or "-", k.color)

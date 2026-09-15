@@ -259,23 +259,33 @@ end
 --
 -- Over-typing is forgiving: 150 in the silver box becomes 1g 50s when you leave
 -- the widget, rather than being rejected.
+--
+-- Sizing is a floor, not a request. A caller asking for 120 pixels gets
+-- MONEY_MIN_WIDTH anyway, because a gold box too narrow to show the number you
+-- typed is worse than a widget that pushes its neighbour along - the strips
+-- that hold these wrap, so there is somewhere for the neighbour to go.
+local MONEY_SUB   = 32      -- silver and copper: two digits normally, three while over-typing
+local MONEY_LBL   = 11      -- the g / s / c letters
+local MONEY_GAP   = 3
+local MONEY_GOLD  = 68      -- six digits and a cursor, so 999999g reads cleanly
+local MONEY_FIXED = (MONEY_SUB * 2) + (MONEY_LBL * 3) + (MONEY_GAP * 5)
+Skin.MONEY_MIN_WIDTH = MONEY_GOLD + MONEY_FIXED
+
 function Skin:MoneyInput(parent, totalWidth, h)
-    totalWidth = totalWidth or 146
-    h = h or 18
+    totalWidth = math.max(tonumber(totalWidth) or 0, Skin.MONEY_MIN_WIDTH)
+    h = math.max(tonumber(h) or 0, 20)
 
     local f = CreateFrame("Frame", nil, parent)
     f:SetSize(totalWidth, h)
 
-    local SUB   = 28                       -- silver and copper boxes
-    local LBL   = 9                        -- the g / s / c letters
-    local goldW = math.max(30, totalWidth - (SUB * 2) - (LBL * 3) - 12)
+    local goldW = totalWidth - MONEY_FIXED
 
     local function unitLabel(after, text, color)
         local l = f:CreateFontString(nil, "OVERLAY")
-        Skin:Font(l, 10, true)
+        Skin:Font(l, 11, true)
         l:SetTextColor(unpack(color))
-        l:SetPoint("LEFT", after, "RIGHT", 2, 0)
-        l:SetWidth(LBL)
+        l:SetPoint("LEFT", after, "RIGHT", MONEY_GAP, 0)
+        l:SetWidth(MONEY_LBL)
         l:SetJustifyH("LEFT")
         l:SetText(text)
         return l
@@ -285,13 +295,19 @@ function Skin:MoneyInput(parent, totalWidth, h)
     gold:SetPoint("LEFT", 0, 0)
     local gl = unitLabel(gold, "g", { 1, 0.84, 0.20, 1 })
 
-    local silver = Skin:NumberBox(f, SUB, h)
-    silver:SetPoint("LEFT", gl, "RIGHT", 2, 0)
+    local silver = Skin:NumberBox(f, MONEY_SUB, h)
+    silver:SetPoint("LEFT", gl, "RIGHT", MONEY_GAP, 0)
     local sl = unitLabel(silver, "s", { 0.78, 0.78, 0.81, 1 })
 
-    local copper = Skin:NumberBox(f, SUB, h)
-    copper:SetPoint("LEFT", sl, "RIGHT", 2, 0)
+    local copper = Skin:NumberBox(f, MONEY_SUB, h)
+    copper:SetPoint("LEFT", sl, "RIGHT", MONEY_GAP, 0)
     unitLabel(copper, "c", { 0.93, 0.65, 0.37, 1 })
+
+    -- Silver and copper never exceed two digits once the widget re-splits, so
+    -- they can be capped. The gold box is left uncapped on purpose: there is no
+    -- sensible ceiling on a price.
+    silver:SetMaxLetters(3)
+    copper:SetMaxLetters(3)
 
     f.gold, f.silver, f.copper = gold, silver, copper
     f.boxes = { gold, silver, copper }
@@ -344,6 +360,82 @@ function Skin:MoneyInput(parent, totalWidth, h)
     return f
 end
 
+-- ---------- Wrapping field strip ----------
+-- A row of labelled controls above a table. The old version laid them out at
+-- fixed offsets, which quietly ran off the right-hand edge as soon as the
+-- window was narrower than the widest screen it was designed on - and stopped
+-- any control being made bigger, because there was nowhere for the extra
+-- pixels to come from.
+--
+-- This one wraps onto as many rows as it needs and reports its own height, so
+-- everything anchored beneath it moves down instead of being covered.
+function Skin:FieldStrip(parent, opts)
+    opts = opts or {}
+    local f = self:Panel(parent)
+    f._items  = {}
+    f._rowH   = opts.rowH   or 38
+    f._padX   = opts.padX   or 8
+    f._gap    = opts.gap    or 12
+    f._labelY = opts.labelY or -4
+    f._ctrlY  = opts.ctrlY  or -16
+    f:SetHeight(f._rowH)
+
+    -- labelText may be nil, for a bare button that explains itself.
+    function f:AddItem(widget, width, labelText, tip)
+        local l
+        if labelText then l = Skin:Label(self, labelText, 10, false, C.textDim) end
+        if tip then Skin:AddTooltip(widget, labelText or "", tip) end
+        -- A widget is allowed to come out wider than it was asked for -
+        -- MoneyInput enforces a floor - so reserve what it actually occupies.
+        local real = widget:GetWidth()
+        if not real or real < width then real = width end
+        self._items[#self._items + 1] = { widget = widget, label = l, w = real }
+        self:Relayout()
+        return widget
+    end
+
+    -- builder(parent, width) keeps call sites reading top to bottom.
+    function f:Add(labelText, width, builder, tip)
+        return self:AddItem(builder(self, width), width, labelText, tip)
+    end
+
+    function f:Relayout()
+        if self._laying then return end
+        self._laying = true
+
+        local avail = self:GetWidth() or 0
+        -- Anchors have not resolved on the first pass; assume a typical window
+        -- and lay out again for real the moment the size arrives.
+        if avail <= 1 then avail = 820 end
+
+        local x, row = self._padX, 1
+        for _, it in ipairs(self._items) do
+            if x > self._padX and (x + it.w) > (avail - self._padX) then
+                x, row = self._padX, row + 1
+            end
+            local top = -((row - 1) * self._rowH)
+            if it.label then
+                it.label:ClearAllPoints()
+                it.label:SetPoint("TOPLEFT", x, top + self._labelY)
+            end
+            it.widget:ClearAllPoints()
+            it.widget:SetPoint("TOPLEFT", x, top + self._ctrlY)
+            x = x + it.w + self._gap
+        end
+
+        local h = row * self._rowH
+        if h ~= self._lastH then
+            self._lastH = h
+            self:SetHeight(h)
+        end
+
+        self._laying = nil
+    end
+
+    f:SetScript("OnSizeChanged", function(s) s:Relayout() end)
+    return f
+end
+
 -- ---------- Item link capture ----------
 -- Shift-clicking an item in your bags, or an item link in chat, routes through
 -- ChatEdit_InsertLink. Blizzard's version only knows about chat edit boxes, the
@@ -388,6 +480,10 @@ function Skin:NumberBox(parent, w, h)
     local e = self:EditBox(parent, w or 60, h or 22)
     e:SetNumeric(true)
     e:SetJustifyH("RIGHT")
+    -- Tighter than a text box. Six copper of padding either side of a
+    -- right-aligned number is six pixels that could have been a digit, and on a
+    -- narrow field it is the difference between reading the price and guessing.
+    e:SetTextInsets(4, 4, 0, 0)
 
     function e:GetNumber() return tonumber(self:GetText()) or self._value or 0 end
     function e:SetNumber(v)
@@ -672,7 +768,9 @@ end
 
 local function layoutCells(frame, cols, startX)
     local x = startX
+    frame._cellX = frame._cellX or {}
     for i, col in ipairs(cols) do
+        frame._cellX[i] = x
         local fs = frame.cells[i]
         if fs then
             fs:ClearAllPoints()
@@ -729,6 +827,88 @@ function Skin:Row(parent, cols)
     function r:Relayout(newCols)
         self.cols = newCols or self.cols
         layoutCells(self, self.cols, 6)
+        self:_LayoutIcon()
+    end
+
+    -- ---------- optional item icon in one column ----------
+    -- Turned on per table. An icon is not decoration here: hovering it shows
+    -- the real item tooltip, and asking for that tooltip is what makes the
+    -- client fetch an item it has never seen - so it doubles as the manual way
+    -- to resolve a row still showing "item #37663".
+    function r:_LayoutIcon()
+        local btn = self._iconBtn
+        if not btn then return end
+        local i   = self._iconCol
+        local fs  = self.cells[i]
+        local col = self.cols and self.cols[i]
+        local x   = self._cellX and self._cellX[i]
+        if not (fs and col and x) then return end
+
+        local s = self._iconSize
+        btn:ClearAllPoints()
+        btn:SetPoint("LEFT", x, 0)
+        fs:ClearAllPoints()
+        if btn._on then
+            fs:SetPoint("LEFT", x + s + 4, 0)
+            fs:SetWidth(math.max(8, col.width - s - 4))
+        else
+            fs:SetPoint("LEFT", x, 0)
+            fs:SetWidth(col.width)
+        end
+    end
+
+    function r:EnableIcon(index, size)
+        if self._iconBtn then return self._iconBtn end
+        size = size or 14
+        self._iconCol, self._iconSize = index or 1, size
+
+        local btn = CreateFrame("Button", nil, self)
+        btn:SetSize(size, size)
+        btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+
+        local tex = btn:CreateTexture(nil, "ARTWORK")
+        tex:SetAllPoints()
+        -- trim the stock icon border so a 14px icon is all art
+        tex:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+        btn.tex = tex
+
+        btn:SetScript("OnEnter", function(s)
+            if not (s._link or s._id) then return end
+            GameTooltip:SetOwner(s, "ANCHOR_RIGHT")
+            -- SetHyperlink on an uncached item is also the request for it
+            GameTooltip:SetHyperlink(s._link or ("item:"..s._id..":0:0:0:0:0:0:0"))
+            GameTooltip:Show()
+        end)
+        btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        -- The icon sits on top of the row, so a click on it has to behave like
+        -- a click on the row rather than swallowing it. Tables set their row
+        -- action either way round, so both are honoured.
+        btn:SetScript("OnClick", function(_, mouse)
+            if r._rowClick then return r._rowClick(r, mouse) end
+            local fn = r:GetScript("OnClick")
+            if fn then return fn(r, mouse) end
+        end)
+
+        btn:Hide()
+        self._iconBtn = btn
+        self:_LayoutIcon()
+        return btn
+    end
+
+    -- texture may be nil while the item is still being fetched; the slot stays
+    -- there with a question mark so the row does not jump about when it lands.
+    function r:SetIcon(texture, link, id)
+        local btn = self._iconBtn
+        if not btn then return end
+        if not (texture or link or id) then
+            btn._on, btn._link, btn._id = false, nil, nil
+            btn:Hide()
+        else
+            btn._on, btn._link, btn._id = true, link, id
+            btn.tex:SetTexture(texture or "Interface\\Icons\\INV_Misc_QuestionMark")
+            btn:Show()
+        end
+        self:_LayoutIcon()
     end
     function r:Set(i, text, color)
         local fs = self.cells[i]
@@ -736,7 +916,33 @@ function Skin:Row(parent, cols)
         fs:SetText(text or "")
         if color then fs:SetTextColor(unpack(color)) end
     end
-    function r:Tint(bg) self:SetBackdropColor(unpack(bg)) end
+    -- Remember the tint so a hover can be undone without the caller telling us
+    -- again which stripe this row was.
+    function r:Tint(bg)
+        self._tint = bg
+        self:SetBackdropColor(unpack(bg))
+    end
+
+    -- Opt-in click target. Rows that do nothing stay flat on purpose - a row
+    -- that lights up under the cursor is promising something, so only the ones
+    -- that actually go somewhere get to do it.
+    function r:SetRowClick(fn, clicks)
+        self._rowClick = fn
+        if not fn then
+            self:SetScript("OnClick", nil)
+            self:SetScript("OnEnter", nil)
+            self:SetScript("OnLeave", nil)
+            self:SetBackdropColor(unpack(self._tint or C.bgRow))
+            return
+        end
+        self:RegisterForClicks(clicks or "LeftButtonUp")
+        self:SetScript("OnClick", function(s, btn)
+            if s._rowClick then s._rowClick(s, btn) end
+        end)
+        self:SetScript("OnEnter", function(s) s:SetBackdropColor(unpack(C.bgHover)) end)
+        self:SetScript("OnLeave", function(s) s:SetBackdropColor(unpack(s._tint or C.bgRow)) end)
+    end
+
     return r
 end
 

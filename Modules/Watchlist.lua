@@ -18,6 +18,12 @@ function M:OnInit()
     AMS:Subscribe("LEDGER_CHANGED",  function() M:Refresh() end)
     AMS:Subscribe("CURRENT_CHANGED", function() M:Refresh() end)
     AMS:Subscribe("AH_STATE",        function() M:Refresh() end)
+    -- item names arriving from the server; only redraw while the tab is up
+    AMS:Subscribe("ITEM_CACHED", function()
+        local p = M._ui and M._ui.panel
+        if p and not p:IsVisible() then return end
+        M:Refresh()
+    end)
 end
 
 -- =============================================================================
@@ -138,7 +144,7 @@ function M:BuildUI(parent)
     C = Skin.COLOR
 
     local panel = CreateFrame("Frame", nil, parent)
-    local ui = {}
+    local ui = { panel = panel }
     self._ui = ui
 
     local header = Skin:Header(panel, "Watchlist")
@@ -302,14 +308,19 @@ function M:BuildUI(parent)
 
     local cols          -- set just below; rows are born at the current widths
     local list = Skin:ScrollList(panel, 20,
-        function(p) return Skin:Row(p, cols and cols() or COLS) end,
+        function(p)
+            local r = Skin:Row(p, cols and cols() or COLS)
+            r:EnableIcon(1, 14)
+            return r
+        end,
         function(row, d, idx, alt)
             if not d then
                 for i = 1, #COLS do row:Set(i, "") end
+                row:SetIcon(nil)
                 row:SetScript("OnClick", nil)
                 return
             end
-            row:Set(1, U:ColorItemName(d.name, d.quality))
+            row:Set(1, U:ItemCell(row, d.id, d.name, d.quality))
             row:Set(2, d.target > 0 and U:MoneyShort(d.target) or "not set",
                        d.target > 0 and C.text or C.warn)
 
@@ -381,15 +392,20 @@ function M:BuildUI(parent)
 
     local resCols
     local resList = Skin:ScrollList(panel, 20,
-        function(p) return Skin:Row(p, resCols and resCols() or RES_COLS) end,
+        function(p)
+            local r = Skin:Row(p, resCols and resCols() or RES_COLS)
+            r:EnableIcon(1, 14)
+            return r
+        end,
         function(row, d, idx, alt)
             if not d then
                 for i = 1, #RES_COLS do row:Set(i, "") end
+                row:SetIcon(nil)
                 row:SetScript("OnClick", nil)
                 return
             end
             local watched = AMS.DB:GetMarket(d.id) ~= nil
-            row:Set(1, U:ColorItemName(d.name, d.quality))
+            row:Set(1, U:ItemCell(row, d.id, d.name, d.quality))
             row:Set(2, tostring(d.auctions))
             row:Set(3, tostring(d.units))
             row:Set(4, d.min and U:MoneyShort(d.min) or "-")

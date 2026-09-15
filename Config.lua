@@ -190,11 +190,11 @@ function Config:BuildPanel(parent)
         Skin:Font(fs, 12, false)
         fs:SetTextColor(unpack(C.text))
         fs:SetPoint("TOPLEFT", col.x, col.y - 4)
-        fs:SetWidth(210); fs:SetJustifyH("LEFT")
+        fs:SetWidth(190); fs:SetJustifyH("LEFT")
         fs:SetText(label)
 
         local e = Skin:EditBox(body, w or 80, 20)
-        e:SetPoint("TOPLEFT", col.x + 214, col.y)
+        e:SetPoint("TOPLEFT", col.x + 196, col.y)
         e:SetText(tostring(Config:Get(path) or 0))
         e:SetScript("OnEditFocusLost", function(s)
             local v = tonumber(s:GetText()) or 0
@@ -215,18 +215,18 @@ function Config:BuildPanel(parent)
         Skin:Font(fs, 12, false)
         fs:SetTextColor(unpack(C.text))
         fs:SetPoint("TOPLEFT", col.x, col.y - 4)
-        fs:SetWidth(210); fs:SetJustifyH("LEFT")
+        fs:SetWidth(190); fs:SetJustifyH("LEFT")
         fs:SetText(label)
 
-        local e = Skin:MoneyInput(body, 150, 20)
-        e:SetPoint("TOPLEFT", col.x + 214, col.y)
+        local e = Skin:MoneyInput(body, 180, 22)
+        e:SetPoint("TOPLEFT", col.x + 196, col.y)
         e:SetMoney(Config:Get(path) or 0)
         e.OnMoneyChanged = function(_, v) Config:Set(path, v) end
         if tooltip then Skin:AddTooltip(e, label, {tooltip}) end
         refreshers[#refreshers+1] = function()
             if not e:HasFocus() then e:SetMoney(Config:Get(path) or 0) end
         end
-        col.y = col.y - 24
+        col.y = col.y - 28
         return e
     end
 

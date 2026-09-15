@@ -2,7 +2,7 @@
 ## Title: Auction Master Suite
 ## Notes: Commodity market control: cost-to-clear, buy plan, batch posting, velocity + P&L
 ## Author: rodneywowwow
-## Version: 0.20.0
+## Version: 0.24.0
 ## SavedVariables: AuctionMasterSuiteDB
 ## SavedVariablesPerCharacter: AuctionMasterSuiteCharDB
 

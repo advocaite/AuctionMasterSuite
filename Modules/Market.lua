@@ -259,24 +259,16 @@ function M:BuildUI(parent)
     ui.depBtn = depBtn
 
     -- ---------- settings strip ----------
-    local strip = Skin:Panel(panel)
+    local strip = Skin:FieldStrip(panel, { rowH = 38, padX = 8, gap = 12, labelY = -4, ctrlY = -16 })
     strip:SetPoint("TOPLEFT",  header, "BOTTOMLEFT",  0, -6)
     strip:SetPoint("TOPRIGHT", header, "BOTTOMRIGHT", 0, -6)
-    strip:SetHeight(38)
     ui.strip = strip
 
-    local x = 8
     local function field(label, width, builder, tip)
-        local l = Skin:Label(strip, label, 10, false, C.textDim)
-        l:SetPoint("TOPLEFT", x, -4)
-        local w = builder(strip, width)
-        w:SetPoint("TOPLEFT", x, -16)
-        if tip then Skin:AddTooltip(w, label, tip) end
-        x = x + width + 12
-        return w
+        return strip:Add(label, width, builder, tip)
     end
 
-    ui.targetBox = field("TARGET PRICE", 146, function(p, w) return Skin:MoneyInput(p, w, 18) end,
+    ui.targetBox = field("TARGET PRICE", 180, function(p, w) return Skin:MoneyInput(p, w, 20) end,
         {"The price you intend to defend, per unit.",
          "Everything else - break-even, buy ceiling, profit - is derived from this."})
     ui.targetBox.OnMoneyChanged = function(_, v)
@@ -285,7 +277,7 @@ function M:BuildUI(parent)
         M:Evaluate()
     end
 
-    ui.marginBox = field("MARGIN %", 50, function(p, w) return Skin:NumberBox(p, w, 18) end,
+    ui.marginBox = field("MARGIN %", 50, function(p, w) return Skin:NumberBox(p, w, 20) end,
         {"Minimum margin you require over what you pay.",
          "Your buy ceiling is set so reselling at target leaves at least this much."})
     ui.marginBox.OnNumberChanged = function(_, v)
@@ -294,7 +286,7 @@ function M:BuildUI(parent)
         M:Evaluate()
     end
 
-    ui.tolBox = field("LEAVE %", 50, function(p, w) return Skin:NumberBox(p, w, 18) end,
+    ui.tolBox = field("LEAVE %", 50, function(p, w) return Skin:NumberBox(p, w, 20) end,
         {"Competitors within this much of your target are effectively already at your price.",
          "Buying them out is gold spent for nothing."})
     ui.tolBox.OnNumberChanged = function(_, v)
@@ -303,7 +295,7 @@ function M:BuildUI(parent)
         M:Evaluate()
     end
 
-    ui.investBox = field("MAX INVESTED", 150, function(p, w) return Skin:MoneyInput(p, w, 18) end,
+    ui.investBox = field("MAX INVESTED", 180, function(p, w) return Skin:MoneyInput(p, w, 20) end,
         {"Hard cap on gold tied up in this one item. 0 = no cap.",
          "This is the line between running a market and betting your fortune on one commodity.",
          "If clearing would cross it, the verdict turns red and says so."})
@@ -313,7 +305,7 @@ function M:BuildUI(parent)
         M:Evaluate()
     end
 
-    ui.stockBox = field("MAX STOCK", 60, function(p, w) return Skin:NumberBox(p, w, 18) end,
+    ui.stockBox = field("MAX STOCK", 60, function(p, w) return Skin:NumberBox(p, w, 20) end,
         {"Hard cap on units held. 0 = no cap."})
     ui.stockBox.OnNumberChanged = function(_, v)
         local m = AMS:CurrentMarket(); if not m then return end
@@ -321,7 +313,7 @@ function M:BuildUI(parent)
         M:Evaluate()
     end
 
-    ui.stackBox = field("POST STACK", 56, function(p, w) return Skin:NumberBox(p, w, 18) end,
+    ui.stackBox = field("POST STACK", 56, function(p, w) return Skin:NumberBox(p, w, 20) end,
         {"Units per auction when you post.",
          "1 is the single-unit strategy: someone who needs three buys three singles happily,",
          "but balks at a stack of twenty at the same price per unit."})
@@ -331,7 +323,7 @@ function M:BuildUI(parent)
         M:Refresh()
     end
 
-    ui.buyStackBox = field("MAX BUY STACK", 68, function(p, w) return Skin:NumberBox(p, w, 18) end,
+    ui.buyStackBox = field("MAX BUY STACK", 68, function(p, w) return Skin:NumberBox(p, w, 20) end,
         {"Never queue an auction holding more units than this. 0 buys any size.",
          " ",
          "Worth knowing before you set it: buying a 20-stack and reposting it as twenty singles",
@@ -346,10 +338,10 @@ function M:BuildUI(parent)
     end
 
     do
-        local l = Skin:Label(strip, "BUY ORDER", 10, false, C.textDim)
-        l:SetPoint("TOPLEFT", x, -4)
-        local dd = Skin:Dropdown(strip, 116, 18)
-        dd:SetPoint("TOPLEFT", x, -16)
+        local dd = field("BUY ORDER", 116, function(p, w) return Skin:Dropdown(p, w, 20) end,
+            {"Cheapest first: best price per unit leads the queue.",
+             "Small stacks first: singles and small lots lead, so stopping half way through",
+             "leaves you holding the flexible stock rather than one huge lot."})
         dd:SetItems({
             { text = "Cheapest first",  value = "cheapest" },
             { text = "Small stacks 1st", value = "smallest" },
@@ -359,12 +351,7 @@ function M:BuildUI(parent)
             m.buyOrder = v
             M:Evaluate()
         end
-        Skin:AddTooltip(dd, "Buy order",
-            {"Cheapest first: best price per unit leads the queue.",
-             "Small stacks first: singles and small lots lead, so stopping half way through",
-             "leaves you holding the flexible stock rather than one huge lot."})
         ui.orderDrop = dd
-        x = x + 128
     end
 
     -- ---------- bottom: buy bar ----------

@@ -27,6 +27,30 @@ function M:OnInit()
     AMS:Subscribe("AUCTIONS_CHANGED", function() M:Refresh() end)
     AMS:Subscribe("AH_STATE",         function() M:Refresh() end)
     AMS:Subscribe("LEDGER_CHANGED",   function() M:Refresh() end)
+    -- item names arriving from the server; only redraw while the tab is up
+    AMS:Subscribe("ITEM_CACHED", function()
+        local p = M._ui and M._ui.panel
+        if p and not p:IsVisible() then return end
+        M:Refresh()
+    end)
+end
+
+-- Clicking any row takes that item to the Market tab. It may well not be a
+-- watched market yet - half of what you have listed is usually incidental - so
+-- create it on the way rather than refusing to go.
+function M:OpenInMarket(itemID)
+    if not itemID then return end
+    if not AMS.DB:GetMarket(itemID) then
+        local info = U:ItemInfo(itemID)
+        if not info then
+            AMS:Print("that item is not in your client cache yet - try again in a moment.")
+            return
+        end
+        AMS.DB:EnsureMarket(info)
+    end
+    AMS:SetCurrentMarket(itemID)
+    AMS.db.lastMarket = itemID
+    AMS.UI:Show("market")
 end
 
 function M:Rescan()
@@ -111,7 +135,7 @@ function M:BuildUI(parent)
     C = Skin.COLOR
 
     local panel = CreateFrame("Frame", nil, parent)
-    local ui = {}
+    local ui = { panel = panel }
     self._ui = ui
 
     local header = Skin:Header(panel, "My Auctions")
@@ -229,6 +253,7 @@ function M:BuildUI(parent)
     local ladderList = Skin:ScrollList(panel, 19,
         function(p)
             local r = Skin:Row(p, ladderCols and ladderCols() or LADDER_COLS)
+            r:EnableIcon(1, 14)
             local b = Skin:Button(r, "Cancel", 56, 15)
             Skin:Font(b.text, 10, true)
             b.textColor = C.bad
@@ -250,10 +275,12 @@ function M:BuildUI(parent)
             row.rowData = d
             if not d then
                 for i = 1, #LADDER_COLS do row:Set(i, "") end
+                row:SetIcon(nil)
                 row.cancelBtn:Hide()
+                row:SetRowClick(nil)
                 return
             end
-            row:Set(1, U:ColorItemName(d.name, d.quality))
+            row:Set(1, U:ItemCell(row, d.id, d.name, d.quality))
             row:Set(2, U:MoneyShort(d.unit))
             row:Set(3, tostring(d.auctions))
             row:Set(4, tostring(d.units))
@@ -263,6 +290,7 @@ function M:BuildUI(parent)
             row:Tint(alt and C.bgRowAlt or C.bgRow)
             -- nothing to cancel if every auction in the group has already sold
             if d.cancellable > 0 then row.cancelBtn:Show() else row.cancelBtn:Hide() end
+            row:SetRowClick(function() M:OpenInMarket(d.id) end)
         end)
     ladderList:SetPoint("TOPLEFT", ladderHdr, "BOTTOMLEFT", 0, -2)
     ladderList:SetPoint("RIGHT", panel, "RIGHT", -8, 0)
@@ -292,6 +320,7 @@ function M:BuildUI(parent)
     local list = Skin:ScrollList(panel, 19,
         function(p)
             local r = Skin:Row(p, cols and cols() or COLS)
+            r:EnableIcon(1, 14)
             local b = Skin:Button(r, "Cancel", 56, 15)
             Skin:Font(b.text, 10, true)
             b.textColor = C.bad
@@ -313,7 +342,8 @@ function M:BuildUI(parent)
             row.rowData = d
             if not d then
                 for i = 1, #COLS do row:Set(i, "") end
-                row:SetScript("OnClick", nil)
+                row:SetIcon(nil)
+                row:SetRowClick(nil)
                 row.cancelBtn:Hide()
                 return
             end
@@ -328,7 +358,7 @@ function M:BuildUI(parent)
                 status, tone = "listed", C.textDim
             end
 
-            row:Set(1, U:ColorItemName(d.name, d.quality))
+            row:Set(1, U:ItemCell(row, d.id, d.name, d.quality))
             row:Set(2, tostring(d.count or 0))
             row:Set(3, d.unit and U:MoneyShort(d.unit) or "-")
             row:Set(4, U:MoneyShort(d.sold and math.max(d.bid or 0, d.buyout or 0) or (d.buyout or 0)), tone)
@@ -347,16 +377,7 @@ function M:BuildUI(parent)
                 row.cancelBtn:Show()
             end
 
-            row:SetScript("OnClick", function()
-                if not d.id then return end
-                if not AMS.DB:GetMarket(d.id) then
-                    local info = U:ItemInfo(d.id)
-                    if info then AMS.DB:EnsureMarket(info) end
-                end
-                AMS:SetCurrentMarket(d.id)
-                AMS.db.lastMarket = d.id
-                AMS.UI:Show("market")
-            end)
+            row:SetRowClick(function() M:OpenInMarket(d.id) end)
         end)
     list:SetPoint("TOPLEFT", hdr, "BOTTOMLEFT", 0, -2)
     list:SetPoint("RIGHT", panel, "RIGHT", -8, 0)
@@ -419,7 +440,7 @@ function M:Refresh()
             local key = (r.name or "?") .. "|" .. r.unit
             local g = groups[key]
             if not g then
-                g = { name = r.name, quality = r.quality, unit = r.unit,
+                g = { id = r.id, name = r.name, quality = r.quality, unit = r.unit,
                       auctions = 0, units = 0, sold = 0, cancellable = 0, value = 0 }
                 groups[key] = g
                 order[#order+1] = g

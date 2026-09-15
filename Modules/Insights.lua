@@ -56,12 +56,41 @@ function M:BuildUI(parent)
     C = Skin.COLOR
 
     local panel = CreateFrame("Frame", nil, parent)
-    local ui = {}
+    local ui = { panel = panel }
     self._ui = ui
 
     local header = Skin:Header(panel, "Insights")
     header:SetPoint("TOPLEFT", 8, -8); header:SetPoint("TOPRIGHT", -8, -8)
     ui.header = header
+
+    -- Same slot as Market and Post: shows which item these numbers are of, and
+    -- takes a drop so you can jump straight here from your bags.
+    local slot = Skin:ItemSlot(header, 22)
+    slot:SetPoint("LEFT", 8, 0)
+    ui.slot = slot
+
+    local function takeCursorItem()
+        if not CursorHasItem() then return false end
+        local kind, id, link = GetCursorInfo()
+        ClearCursor()
+        if kind ~= "item" then return false end
+        local info = U:ItemInfo(link or id)
+        if not info then
+            AMS:Print("that item is not in your client cache yet.")
+            return true
+        end
+        AMS.DB:EnsureMarket(info)
+        AMS:SetCurrentMarket(info.id)
+        AMS.db.lastMarket = info.id
+        M:Refresh()
+        return true
+    end
+    slot:SetScript("OnReceiveDrag", takeCursorItem)
+    slot:SetScript("OnClick", takeCursorItem)
+    slot:Hide()   -- only meaningful in Appraise, which is about one item
+
+    header.text:ClearAllPoints()
+    header.text:SetPoint("LEFT", 10, 0)
 
     -- ---------- mode switch ----------
     local portBtn = Skin:TabButton(header, "Portfolio", 90, 22)
@@ -326,6 +355,9 @@ function M:RefreshPortfolio()
                          or dim == "hour"      and "HOUR OF DAY"
                          or dim == "weekday"   and "WEEKDAY"
                          or "DAY")
+    ui.slot:Hide()
+    ui.header.text:ClearAllPoints()
+    ui.header.text:SetPoint("LEFT", 10, 0)
     ui.header:SetText("Insights")
     ui.header:SetSub(("%d row%s%s"):format(#rows, #rows == 1 and "" or "s",
         scope and (" - "..scope) or ""))
@@ -337,7 +369,17 @@ function M:RefreshAppraisal()
     local mk = AMS:GetModule("market")
     local entries = (mk and mk.entries) or nil
 
-    ui.header:SetText(m and ("Appraise - "..U:ColorItemName(m.name, m.quality)) or "Appraise")
+    ui.slot:Show()
+    ui.header.text:ClearAllPoints()
+    ui.header.text:SetPoint("LEFT", ui.slot, "RIGHT", 8, 0)
+    if m then
+        local aName, aQuality, aTexture, aLink = U:ItemName(m.id, m.name)
+        ui.slot:SetItem(aLink, aTexture)
+        ui.header:SetText("Appraise - "..U:ColorItemName(aName, aQuality or m.quality))
+    else
+        ui.slot:SetItem(nil, nil)
+        ui.header:SetText("Appraise")
+    end
     ui.header:SetSub(entries and ("from a scan "..U:Ago(mk.scannedAt or 0)) or "not scanned")
     ui.apprScan:SetEnabled(m ~= nil and AMS:AtAuctionHouse())
 

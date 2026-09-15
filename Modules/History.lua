@@ -18,12 +18,40 @@ function M:BuildUI(parent)
     C = Skin.COLOR
 
     local panel = CreateFrame("Frame", nil, parent)
-    local ui = {}
+    local ui = { panel = panel }
     self._ui = ui
 
     local header = Skin:Header(panel, "History")
     header:SetPoint("TOPLEFT", 8, -8); header:SetPoint("TOPRIGHT", -8, -8)
     ui.header = header
+
+    -- Same slot as Market and Post: shows which item these numbers are of, and
+    -- takes a drop so you can jump straight here from your bags.
+    local slot = Skin:ItemSlot(header, 22)
+    slot:SetPoint("LEFT", 8, 0)
+    ui.slot = slot
+
+    local function takeCursorItem()
+        if not CursorHasItem() then return false end
+        local kind, id, link = GetCursorInfo()
+        ClearCursor()
+        if kind ~= "item" then return false end
+        local info = U:ItemInfo(link or id)
+        if not info then
+            AMS:Print("that item is not in your client cache yet.")
+            return true
+        end
+        AMS.DB:EnsureMarket(info)
+        AMS:SetCurrentMarket(info.id)
+        AMS.db.lastMarket = info.id
+        M:Refresh()
+        return true
+    end
+    slot:SetScript("OnReceiveDrag", takeCursorItem)
+    slot:SetScript("OnClick", takeCursorItem)
+
+    header.text:ClearAllPoints()
+    header.text:SetPoint("LEFT", slot, "RIGHT", 8, 0)
 
     local wipeBtn = Skin:Button(header, "Clear", 60, 20)
     wipeBtn:SetPoint("RIGHT", -8, 0)
@@ -134,6 +162,7 @@ function M:Refresh()
 
     local m = AMS:CurrentMarket()
     if not m then
+        ui.slot:SetItem(nil, nil)
         ui.header:SetText("History")
         ui.header:SetSub("no item selected")
         ui.trend:SetText("")
@@ -144,7 +173,9 @@ function M:Refresh()
         return
     end
 
-    ui.header:SetText("History - "..U:ColorItemName(m.name, m.quality))
+    local hName, hQuality, hTexture, hLink = U:ItemName(m.id, m.name)
+    ui.slot:SetItem(hLink, hTexture)
+    ui.header:SetText("History - "..U:ColorItemName(hName, hQuality or m.quality))
 
     local days = AMS.DB:DailyHistory(m.id, 21)
     local snaps = AMS.DB:GetSnapshots(m.id)

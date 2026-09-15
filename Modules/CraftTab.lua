@@ -19,6 +19,14 @@ function M:OnInit()
     AMS:Subscribe("CURRENT_CHANGED", function() M.selected = nil; M:Refresh() end)
     AMS:Subscribe("HISTORY_CHANGED", function() M:Refresh() end)
     AMS:Subscribe("AH_STATE",        function() M:Refresh() end)
+    -- Names arriving from the server: redraw so "item #37663" becomes the item.
+    -- Only while the tab is actually up - this fires every third of a second
+    -- while a queue drains and there is no reason to rebuild a hidden panel.
+    AMS:Subscribe("ITEM_CACHED", function()
+        local p = M._ui and M._ui.panel
+        if p and not p:IsVisible() then return end
+        M:Refresh()
+    end)
 end
 
 -- The deliberate way out of the tab: take this item to the Market.
@@ -111,7 +119,7 @@ function M:BuildUI(parent)
     C = Skin.COLOR
 
     local panel = CreateFrame("Frame", nil, parent)
-    local ui = {}
+    local ui = { panel = panel }
     self._ui = ui
 
     local header = Skin:Header(panel, "Craft")
@@ -217,14 +225,19 @@ function M:BuildUI(parent)
     local knownCols
     -- shrunk to make room for the two views below it
     local knownList = Skin:ScrollList(panel, 19,
-        function(p) return Skin:Row(p, knownCols and knownCols() or KNOWN_COLS) end,
+        function(p)
+            local r = Skin:Row(p, knownCols and knownCols() or KNOWN_COLS)
+            r:EnableIcon(1, 14)
+            return r
+        end,
         function(row, d, idx, alt)
             if not d then
                 for i = 1, #KNOWN_COLS do row:Set(i, "") end
+                row:SetIcon(nil)
                 row:SetScript("OnClick", nil)
                 return
             end
-            row:Set(1, U:ColorItemName(d.name, d.quality))
+            row:Set(1, U:ItemCell(row, d.id, d.name, d.quality))
             row:Set(2, d.method or "?", C.textDim)
             -- a recipe is exact; a learned conversion is only as good as its sample
             row:Set(3, d.ops and tostring(d.ops) or "exact",
@@ -280,6 +293,65 @@ function M:BuildUI(parent)
          "This is how a reagent leads you to a market you were not looking at."})
     ui.usedBtn = usedBtn
 
+    -- The third way in, and the only one that is not about the selected item:
+    -- browse a whole profession and see what it can make.
+    local profBtn = Skin:TabButton(panel, "Professions", 110, 20)
+    profBtn:SetPoint("LEFT", usedBtn, "RIGHT", 4, 0)
+    profBtn:SetScript("OnClick", function() M.view = "prof"; M:Refresh() end)
+    Skin:AddTooltip(profBtn, "Browse by profession",
+        {"Everything a profession can make and what each one needs, costed at today's prices.",
+         " ",
+         "It lists the whole profession, not only what you know - a profession you do not",
+         "have still tells you whether its mats are worth posting.",
+         " ",
+         "Open the profession window once and the recipes you actually know get marked."})
+    ui.profBtn = profBtn
+
+    local profDrop = Skin:Dropdown(panel, 190, 20)
+    profDrop:SetPoint("LEFT", profBtn, "RIGHT", 8, 0)
+    profDrop.OnValueChanged = function(_, v)
+        M.profession     = v
+        AMS.db.craftProf = v      -- the one you browse is rarely the one you browsed by accident
+        M.view = "prof"
+        M:Refresh()
+    end
+    profDrop:Hide()
+    ui.profDrop = profDrop
+
+    -- Casting the profession is what opens its window, and that is the only way
+    -- to learn which recipes are yours. Has to be a real click - the client
+    -- refuses a cast that did not come from one.
+    local openProfBtn = Skin:Button(panel, "Open it", 80, 20)
+    openProfBtn:SetPoint("LEFT", profDrop, "RIGHT", 6, 0)
+    openProfBtn:SetScript("OnClick", function()
+        local p = M.profession
+        if p and CastSpellByName then CastSpellByName(p) end
+    end)
+    Skin:AddTooltip(openProfBtn, "Open this profession",
+        {"Opens your profession window, which is the moment the addon can read",
+         "every recipe you know - exact reagents and all.",
+         " ",
+         "Only works for a profession this character actually has."})
+    openProfBtn:Hide()
+    ui.openProfBtn = openProfBtn
+
+    -- Enchanting only. An enchant has no item id of its own, so the only way to
+    -- learn what a Scroll of <enchant> is worth is to see one on the board.
+    local scrollBtn = Skin:Button(panel, "Find scrolls", 96, 20)
+    scrollBtn:SetPoint("LEFT", openProfBtn, "RIGHT", 6, 0)
+    scrollBtn:SetScript("OnClick", function() M:FindScrolls() end)
+    Skin:AddTooltip(scrollBtn, "Match scrolls to enchants",
+        {"Searches the auction house once for 'Scroll of Enchant' and reads the item id",
+         "off every scroll anyone has listed.",
+         " ",
+         "Each enchant is costed from its reagents already - what is missing is what the",
+         "scroll SELLS for, and that needs the scroll's own id. This is how it gets one.",
+         " ",
+         "An enchant nobody has listed stays unpriced, which is honest: there is no market",
+         "price for something with no scroll on the board."})
+    scrollBtn:Hide()
+    ui.scrollBtn = scrollBtn
+
     local outHdr = Skin:ListHeader(panel, OUT_COLS)
     outHdr:SetPoint("TOPLEFT", madeBtn, "BOTTOMLEFT", 0, -6)
     outHdr:SetPoint("RIGHT", panel, "RIGHT", -8, 0)
@@ -287,14 +359,27 @@ function M:BuildUI(parent)
 
     local outCols
     local outList = Skin:ScrollList(panel, 19,
-        function(p) return Skin:Row(p, outCols and outCols() or OUT_COLS) end,
+        function(p)
+            local r = Skin:Row(p, outCols and outCols() or OUT_COLS)
+            r:EnableIcon(1, 14)
+            return r
+        end,
         function(row, d, idx, alt)
             if not d then
                 for i = 1, #OUT_COLS do row:Set(i, "") end
+                row:SetIcon(nil)
                 row:SetScript("OnClick", nil)
                 return
             end
-            row:Set(1, U:ColorItemName(d.name, d.quality))
+            -- Resolved here rather than when the list was built: only the rows
+            -- on screen get asked for, so scrolling a five hundred row
+            -- profession never queues more than a screenful at a time.
+            --
+            -- The icon is also the manual escape hatch - hovering it shows the
+            -- real tooltip, which is the same request, only sooner.
+            -- the suffix sits outside the quality colour on purpose: a colour
+            -- code closed inside another one resets to white, not back to it
+            row:Set(1, U:ItemCell(row, d.id, d.name, d.quality) .. (d.suffix or ""))
             row:Set(2, d.perOp == math.floor(d.perOp)
                         and tostring(math.floor(d.perOp))
                         or ("%.2f"):format(d.perOp))
@@ -318,8 +403,20 @@ function M:BuildUI(parent)
             -- deliberate exit to the Market tab.
             row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
             row:SetScript("OnClick", function(_, button)
+                -- An enchant we have never seen a scroll for has no item to
+                -- open. Say why rather than silently doing nothing.
+                if not d.id then
+                    if d.noItem then
+                        AMS:Print("no scroll for that enchant has been seen yet - press 'Find scrolls' at an auctioneer.")
+                    end
+                    return
+                end
                 if button == "RightButton" then M:OpenInMarket(d.id) else
                     M.selected = d.id
+                    -- Picking a row out of the profession browser means "show
+                    -- me this one", so drop back to the per-item views rather
+                    -- than redrawing the list you just clicked out of.
+                    if M.view == "prof" then M.view = nil end
                     M:Refresh()
                 end
             end)
@@ -332,7 +429,8 @@ function M:BuildUI(parent)
 
     local foot = Skin:Label(panel,
         "Left-click any row to inspect that item here - follow a gem to its ore and on to whatever the ore makes. "..
-        "Right-click to open it on the Market tab. Drag an item onto the slot up top to jump straight to it.  |  "..
+        "Right-click to open it on the Market tab. Drag an item onto the slot up top to jump straight to it. "..
+        "Professions lists a whole trade, yours or not, so you can see what its mats are worth making.  |  "..
         "Yields are learned by watching you prospect, mill or disenchant - nothing is hardcoded, so these are "..
         "your numbers on your server. Inputs are costed at what you would pay (the cheapest ask) and outputs at "..
         "what you would realistically get (the median), because pricing both the same way flatters every conversion.",
@@ -376,6 +474,151 @@ function M:CurrentInput()
 end
 
 -- =============================================================================
+-- Professions view
+-- =============================================================================
+
+-- One auction house search that matches listed scrolls back to their enchants,
+-- so the sell side of every enchant stops being blank.
+function M:FindScrolls()
+    if self.scanning then return end
+    if not AMS:AtAuctionHouse() then
+        AMS:Print("open the auction house to look for scrolls.")
+        return
+    end
+    self.scanning = true
+    if self._ui then self._ui.header:SetSub("sweeping the auction house for enchant scrolls...") end
+
+    AMS.Craft:ScanForScrolls(function(_, err)
+        M.scanning = false
+        if err then AMS:Print("scroll sweep failed: %s", err) end
+        M:Refresh()
+    end)
+    self:Refresh()
+end
+
+function M:RefreshProfessions()
+    local ui = self._ui
+    local profs = AMS.Craft:Professions()
+
+    if #profs == 0 then
+        ui.header:SetText("Craft - Professions")
+        ui.header:SetSub("no recipe data")
+        ui.verdict:Set("NO RECIPE DATA",
+            "Data/RecipeData.lua did not load. Reinstall the addon - that file is where every recipe in the game comes from.",
+            C.bad)
+        ui.outList:SetData({})
+        ui.openProfBtn:SetEnabled(false)
+        return
+    end
+
+    local items = {}
+    for _, p in ipairs(profs) do
+        items[#items+1] = {
+            value = p.name,
+            -- yours carry their skill level, which is the fastest way to see
+            -- which of two similar lines is the one you can actually use
+            text  = p.haveIt
+                and ("%s  %d/%d"):format(p.name, p.rank or 0, p.max or 0)
+                or  ("%s  (%d)"):format(p.name, p.total),
+        }
+    end
+    ui.profDrop:SetItems(items)
+
+    -- Default to the first profession this character has - the list is sorted
+    -- with yours at the top - falling back to whatever is first when they have
+    -- none of them.
+    local pick, rec = self.profession or AMS.db.craftProf, nil
+    for _, p in ipairs(profs) do if p.name == pick then rec = p end end
+    if not rec then
+        rec  = profs[1]
+        pick = rec.name
+    end
+    self.profession = pick
+    ui.profDrop:SetValue(pick, nil, true)
+    ui.openProfBtn:SetEnabled(rec.haveIt)
+
+    if pick == "Enchanting" then
+        ui.scrollBtn:Show()
+        ui.scrollBtn:SetEnabled(AMS:AtAuctionHouse() and not self.scanning)
+    else
+        ui.scrollBtn:Hide()
+    end
+
+    ui.header:SetText("Craft - "..pick)
+
+    local rows = AMS.Craft:RecipesForProfession(pick)
+    local priced, best, knownRows = 0, nil, 0
+    local out = {}
+    for _, r in ipairs(rows) do
+        if r.profit then
+            priced = priced + 1
+            if not best or r.profit > best.profit then best = r end
+        end
+        if r.known then knownRows = knownRows + 1 end
+        out[#out+1] = {
+            id = r.id, name = r.name, quality = r.quality,
+            texture = r.texture, link = r.link,
+            suffix    = r.known and "  |cff4cd94cknown|r" or nil,
+            perOp     = r.made or 1,
+            noItem    = r.isEnchant and not r.id or nil,
+            total     = r.mats,
+            price     = r.cost,
+            net       = r.value,
+            profitVal = r.profit,
+        }
+    end
+
+    if not self.scanning then
+        local waiting = U:ItemsPending()
+        ui.header:SetSub(("%d recipes  |  %d priced  |  %d you know%s"):format(
+            #rows, priced, knownRows,
+            waiting > 0 and ("  |  %d names loading"):format(waiting) or ""))
+    end
+
+    for i, text in ipairs({ "MAKES", "QTY", "MATS", "COSTS", "SELLS FOR", "PROFIT" }) do
+        if ui.outHdr.cells[i] then ui.outHdr.cells[i]:SetText(text) end
+    end
+    ui.outList:SetData(out)
+
+    -- ---------- the verdict ----------
+    -- Three different situations, and conflating them is what makes a browser
+    -- like this useless: a profession you have but never opened looks identical
+    -- to one you do not have unless it says so.
+    local extra = ""
+    if pick == "Enchanting" then
+        local missing, total = AMS.Craft:UnmatchedEnchants()
+        if missing > 0 then
+            extra = (" Every one of the %d enchants is listed and costed from its reagents plus a vellum, but %d have no scroll matched yet, so what they SELL for is unknown. Press 'Find scrolls' at an auctioneer to read the ids off the board."):format(total, missing)
+        else
+            extra = (" All %d enchants are matched to a scroll."):format(total)
+        end
+    end
+
+    if rec.haveIt and rec.known == 0 then
+        ui.verdict:Set(("OPEN YOUR %s WINDOW"):format(pick:upper()),
+            ("You have %s at %d/%d but the addon has never read it. Press 'Open it' - the moment the window is up, every recipe you know is recorded with its exact reagents, and those rows get marked. Everything below is what the profession can make in general."):format(
+                pick, rec.rank or 0, rec.max or 0) .. extra,
+            C.warn)
+    elseif best then
+        -- the row list holds names lazily, so the one we single out gets asked
+        -- for explicitly rather than reaching the verdict as a nil
+        local bestName = U:ItemName(best.id, best.name)
+        ui.verdict:Set(("BEST IN %s: %s"):format(pick:upper(), bestName),
+            ("%d of %d recipes can be priced. The best is %s at %s profit a craft, needing %d material%s.%s%s"):format(
+                priced, #rows, bestName, U:Money(best.profit, true), best.mats,
+                best.mats == 1 and "" or "s",
+                best.known and " You know it." or
+                    (rec.haveIt and " You do not know that one yet." or (" Nobody here has %s."):format(pick)),
+                extra),
+            best.profit > 0 and C.good or C.warn)
+    else
+        ui.verdict:Set(("%s - %d RECIPES"):format(pick:upper(), #rows),
+            ("Nothing here can be priced yet - the crafted items and their reagents have never been scanned. Click any row to open it, then 'Watch all' and 'Price it all' to cost that branch.%s"):format(extra),
+            C.textDim)
+    end
+end
+
+-- =============================================================================
 -- Refresh
 -- =============================================================================
 
@@ -399,6 +642,34 @@ function M:Refresh()
     ui.watchBtn:SetEnabled(id ~= nil)
     ui.forgetBtn:SetEnabled(id ~= nil)
 
+    local e         = id and AMS.Craft:EvaluateAny(id) or nil
+    local usedCount = id and AMS.Craft:UsedInCount(id) or 0
+
+    -- Which views this item actually has, and which one to show. Professions is
+    -- always available: it is the one view that is not about the selected item,
+    -- so it is also the sensible landing place when nothing is selected.
+    local hasMade, hasUsed = e ~= nil, usedCount > 0
+    local view = self.view
+    if view == "made" and not hasMade then view = nil end
+    if view == "used" and not hasUsed then view = nil end
+    view = view or (hasMade and "made") or (hasUsed and "used") or "prof"
+
+    ui.madeBtn:SetSelected(view == "made")
+    ui.usedBtn:SetSelected(view == "used")
+    ui.profBtn:SetSelected(view == "prof")
+    ui.madeBtn:SetEnabled(hasMade)
+    ui.usedBtn:SetEnabled(hasUsed)
+    ui.usedBtn.text:SetText(hasUsed and ("Used in (%d)"):format(usedCount) or "Used in")
+
+    if view == "prof" then
+        ui.profDrop:Show()
+        ui.openProfBtn:Show()
+        return self:RefreshProfessions()
+    end
+    ui.profDrop:Hide()
+    ui.openProfBtn:Hide()
+    ui.scrollBtn:Hide()
+
     if not id then
         ui.header:SetText("Craft")
         if not self.scanning then ui.header:SetSub("nothing learned yet") end
@@ -409,27 +680,10 @@ function M:Refresh()
         return
     end
 
-    local e = AMS.Craft:EvaluateAny(id)
-    local usedCount = AMS.Craft:UsedInCount(id)
-
-    -- which views this item actually has, and which one to show
-    local hasMade, hasUsed = e ~= nil, usedCount > 0
-    local view = self.view
-    if view == "made" and not hasMade then view = nil end
-    if view == "used" and not hasUsed then view = nil end
-    view = view or (hasMade and "made") or (hasUsed and "used") or nil
-
-    ui.madeBtn:SetSelected(view == "made")
-    ui.usedBtn:SetSelected(view == "used")
-    ui.madeBtn:SetEnabled(hasMade)
-    ui.usedBtn:SetEnabled(hasUsed)
-    ui.usedBtn.text:SetText(hasUsed and ("Used in (%d)"):format(usedCount) or "Used in")
-
     -- ---------- what it goes into ----------
     if view == "used" then
-        local uinfo = U:ItemInfo(id)
-        ui.header:SetText("Craft - "..U:ColorItemName(
-            (uinfo and uinfo.name) or ("item #"..id), uinfo and uinfo.quality))
+        local uname, uquality = U:ItemName(id)
+        ui.header:SetText("Craft - "..U:ColorItemName(uname, uquality))
         if not self.scanning then
             ui.header:SetSub(("used in %d recipe%s"):format(usedCount, usedCount == 1 and "" or "s"))
         end
@@ -440,9 +694,9 @@ function M:Refresh()
 
         local rows = {}
         for _, r in ipairs(AMS.Craft:UsedIn(id)) do
-            local ri = U:ItemInfo(r.id)
             rows[#rows+1] = {
-                id = r.id, name = r.name, quality = ri and ri.quality,
+                id = r.id, name = r.name, quality = r.quality,
+                texture = r.texture, link = r.link,
                 perOp = r.need, total = nil,
                 price = r.cost, net = r.value, profitVal = r.profit,
                 known = r.known, profession = r.profession,
@@ -458,9 +712,10 @@ function M:Refresh()
             end
         end
         if best then
-            ui.verdict:Set(("BEST USE: %s"):format(best.name),
+            local bestName = U:ItemName(best.id, best.name)
+            ui.verdict:Set(("BEST USE: %s"):format(bestName),
                 ("%d of the %d recipes using this can be priced. The best is %s (%s) at %s profit a craft, needing %d of these.%s"):format(
-                    priced, usedCount, best.name, best.profession or "?",
+                    priced, usedCount, bestName, best.profession or "?",
                     U:Money(best.profitVal, true), best.perOp,
                     best.known and " You know that recipe." or " Nobody here knows that recipe yet."),
                 best.profitVal > 0 and C.good or C.warn)
@@ -478,9 +733,9 @@ function M:Refresh()
         return
     end
 
-    local info  = U:ItemInfo(id)
-    local rec   = e.rec or e.recipe
-    ui.header:SetText("Craft - "..U:ColorItemName(rec.name or (info and info.name), info and info.quality))
+    local rec = e.rec or e.recipe
+    local itemName, itemQuality = U:ItemName(id, rec.name)
+    ui.header:SetText("Craft - "..U:ColorItemName(itemName, itemQuality))
     if not self.scanning then
         if e.isRecipe then
             ui.header:SetSub(("%s%s, makes %s%s"):format(
@@ -506,9 +761,9 @@ function M:Refresh()
     local basis = e.isRecipe and (e.cost or 0) or (e.value or 0)
     local rows = {}
     for _, r in ipairs(e.rows) do
-        local oi = U:ItemInfo(r.id)
         rows[#rows+1] = {
-            id = r.id, name = r.name, quality = oi and oi.quality,
+            id = r.id, name = r.name, quality = r.quality,
+            texture = r.texture, link = r.link,
             perOp = r.perOp, total = e.isRecipe and nil or r.total,
             price = r.price, net = r.net,
             share = (basis > 0 and (r.net or 0) > 0) and (r.net / basis) or nil,
@@ -521,7 +776,7 @@ function M:Refresh()
     if #missing > 0 then
         local names = {}
         for i = 1, math.min(3, #missing) do
-            names[#names+1] = missing[i].name or (U:ItemInfo(missing[i].id) or {}).name or ("item #"..missing[i].id)
+            names[#names+1] = U:ItemName(missing[i].id, missing[i].name)
         end
         local howTo = AMS:AtAuctionHouse()
             and "Press 'Price it all' to scan them now"

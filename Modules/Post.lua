@@ -81,28 +81,20 @@ function M:BuildUI(parent)
     header.text:SetPoint("LEFT", slot, "RIGHT", 8, 0)
 
     -- ---------- controls ----------
-    local strip = Skin:Panel(panel)
+    local strip = Skin:FieldStrip(panel, { rowH = 46, padX = 10, gap = 12, labelY = -6, ctrlY = -20 })
     strip:SetPoint("TOPLEFT",  header, "BOTTOMLEFT",  0, -6)
     strip:SetPoint("TOPRIGHT", header, "BOTTOMRIGHT", 0, -6)
-    strip:SetHeight(46)
     ui.strip = strip
 
-    local x = 10
     local function field(label, width, builder, tip)
-        local l = Skin:Label(strip, label, 10, false, C.textDim)
-        l:SetPoint("TOPLEFT", x, -6)
-        local w = builder(strip, width)
-        w:SetPoint("TOPLEFT", x, -20)
-        if tip then Skin:AddTooltip(w, label, tip) end
-        x = x + width + 12
-        return w
+        return strip:Add(label, width, builder, tip)
     end
 
-    ui.priceBox = field("PRICE PER UNIT", 150, function(p, w) return Skin:MoneyInput(p, w, 20) end,
+    ui.priceBox = field("PRICE PER UNIT", 180, function(p, w) return Skin:MoneyInput(p, w, 22) end,
         {"What each unit sells for. Defaults to the market target."})
     ui.priceBox.OnMoneyChanged = function() M:Refresh() end
 
-    ui.stackBox = field("STACK", 55, function(p, w) return Skin:NumberBox(p, w, 20) end,
+    ui.stackBox = field("STACK", 55, function(p, w) return Skin:NumberBox(p, w, 22) end,
         {"Units per auction.",
          "1 puts a single unit in front of the buyer who needs one - they compare the total, not the unit price."})
     ui.stackBox.OnNumberChanged = function(_, v)
@@ -111,14 +103,11 @@ function M:BuildUI(parent)
         M:Refresh()
     end
 
-    ui.countBox = field("AUCTIONS", 65, function(p, w) return Skin:NumberBox(p, w, 20) end,
+    ui.countBox = field("AUCTIONS", 65, function(p, w) return Skin:NumberBox(p, w, 22) end,
         {"How many separate auctions to create."})
     ui.countBox.OnNumberChanged = function() M:Refresh() end
 
-    local durLbl = Skin:Label(strip, "DURATION", 10, false, C.textDim)
-    durLbl:SetPoint("TOPLEFT", x, -6)
-    local dur = Skin:Dropdown(strip, 100, 20)
-    dur:SetPoint("TOPLEFT", x, -20)
+    local dur = field("DURATION", 100, function(p, w) return Skin:Dropdown(p, w, 22) end)
     dur:SetItems(DURATIONS)
     dur.OnValueChanged = function(_, v)
         local m = AMS:CurrentMarket()
@@ -126,10 +115,9 @@ function M:BuildUI(parent)
         M:Refresh()
     end
     ui.durDrop = dur
-    x = x + 112
 
-    local ucBtn = Skin:Button(strip, "Undercut lowest", 116, 20)
-    ucBtn:SetPoint("TOPLEFT", x, -20)
+    local ucBtn = Skin:Button(strip, "Undercut lowest", 116, 22)
+    strip:AddItem(ucBtn, 116)
     ucBtn:SetScript("OnClick", function() M:UndercutLowest() end)
     Skin:AddTooltip(ucBtn, "Undercut the cheapest listing",
         {"Sets your price just under the cheapest auction that is not yours.",
@@ -138,11 +126,10 @@ function M:BuildUI(parent)
          "Worth thinking about before you use it: if the cheapest is already at the price",
          "you want to hold, matching it is usually better than going lower - undercutting",
          "your own target is how a price war starts."})
-    x = x + 128
     ui.ucBtn = ucBtn
 
-    local cancelAllBtn = Skin:Button(strip, "Cancel all mine", 116, 20)
-    cancelAllBtn:SetPoint("TOPLEFT", x, -20)
+    local cancelAllBtn = Skin:Button(strip, "Cancel all mine", 116, 22)
+    strip:AddItem(cancelAllBtn, 116)
     cancelAllBtn.textColor = C.bad
     cancelAllBtn.text:SetTextColor(unpack(C.bad))
     cancelAllBtn:SetScript("OnClick", function() M:CancelAll() end)
@@ -154,11 +141,10 @@ function M:BuildUI(parent)
          " ",
          "Auctions that have already sold are left alone - that gold is on its way. Ones with",
          "a bid on them are skipped too, because cancelling those costs an extra fee."})
-    x = x + 128
     ui.cancelAllBtn = cancelAllBtn
 
-    local fillBtn = Skin:Button(strip, "Fill max", 70, 20)
-    fillBtn:SetPoint("TOPLEFT", x, -20)
+    local fillBtn = Skin:Button(strip, "Fill max", 70, 22)
+    strip:AddItem(fillBtn, 70)
     fillBtn:SetScript("OnClick", function()
         local m = AMS:CurrentMarket(); if not m then return end
         local stack = math.max(1, ui.stackBox:GetNumber())
